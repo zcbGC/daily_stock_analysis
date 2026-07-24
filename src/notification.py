@@ -2083,6 +2083,12 @@ class NotificationService(
         report_language = self._get_report_language(result)
         labels = get_report_labels(report_language)
 
+        # 盘中/午休/收盘竞价 → "收盘" 改为 "盘中估算价"
+        _phase = snapshot.get("_phase", "")
+        if _phase in {"intraday", "lunch_break", "closing_auction"}:
+            labels = dict(labels)
+            labels["close_label"] = "盘中估算价"
+
         lines.extend([
             f"### 📈 {labels['market_snapshot_heading']}",
             "",

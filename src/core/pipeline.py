@@ -90,10 +90,12 @@ from src.services.decision_signal_summary import summarize_decision_signal
 from src.enums import ReportType
 from src.stock_analyzer import StockTrendAnalyzer, TrendAnalysisResult
 from src.core.trading_calendar import (
+    MarketPhase,
     build_market_phase_context,
     get_effective_trading_date,
     get_market_for_stock,
     get_market_now,
+    infer_market_phase,
     is_market_open,
 )
 from data_provider.us_index_mapping import is_us_stock_code
@@ -442,8 +444,8 @@ class StockAnalysisPipeline:
                 if self.config.enable_realtime_quote:
                     realtime_quote = self.fetcher_manager.get_realtime_quote(code, log_final_failure=False)
                     if realtime_quote:
-                        # 使用实时行情返回的真实股票名称
-                        if realtime_quote.name:
+                        # 使用实时行情返回的股票名称（仅在尚未获取到正式名称时）
+                        if realtime_quote.name and stock_name == code:
                             stock_name = realtime_quote.name
                         # 兼容不同数据源的字段（有些数据源可能没有 volume_ratio）
                         volume_ratio = getattr(realtime_quote, 'volume_ratio', None)
@@ -2877,8 +2879,15 @@ class StockAnalysisPipeline:
     ) -> date:
         """
         Resolve the trading date used by checkpoint/resume checks.
+
+        盘中/午休/盘后 → 当天（即使日线未完成，is_partial_bar 已告知 AI）
+        非交易日/盘前  → 上一个完整交易日（原逻辑）
         """
         market = get_market_for_stock(normalize_stock_code(code))
+        market_now = get_market_now(market, current_time=current_time)
+        phase = infer_market_phase(market, current_time=market_now)
+        if phase in {MarketPhase.INTRADAY, MarketPhase.LUNCH_BREAK, MarketPhase.POSTMARKET}:
+            return market_now.date()
         return get_effective_trading_date(market, current_time=current_time)
 
     @staticmethod

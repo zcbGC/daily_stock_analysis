@@ -2225,6 +2225,63 @@ class DataFetcherManager:
                 circuit_breaker.record_failure(source_key, str(e))
                 continue
 
+        # 降级：本地筹码计算（基于历史K线+换手率，无需外部API）
+        try:
+            from src.contrib.chip_calculator import compute_chip_distribution
+            from data_provider.realtime_types import ChipDistribution
+
+            logger.info(f"[筹码分布] {stock_code} 外部API全部失败，尝试本地计算...")
+            # 优先用新浪日线（含换手率），走 akshare 直接获取避免 DB 裁剪
+            try:
+                from data_provider.akshare_fetcher import _to_xq_symbol
+                symbol = _to_xq_symbol(stock_code)
+                if symbol:
+                    import akshare as _ak
+                    _sina_df = _ak.stock_zh_a_daily(symbol=symbol.lower(), adjust='qfq')
+                    if _sina_df is not None and not _sina_df.empty:
+                        _sina_df = _sina_df.rename(columns={'turnover': 'turnover_rate'})
+                        kline_df = _sina_df
+                    else:
+                        kline_df = None
+                else:
+                    kline_df = None
+            except Exception:
+                kline_df = None
+            if kline_df is None:
+                kline_result = self.get_daily_data(stock_code)
+                kline_df = kline_result[0] if isinstance(kline_result, tuple) else kline_result
+            if kline_df is not None and not kline_df.empty:
+                current_price = 0.0
+                try:
+                    quote = self.get_realtime_quote(stock_code)
+                    if quote and quote.price:
+                        current_price = float(quote.price)
+                    else:
+                        current_price = float(kline_df["close"].iloc[-1])
+                except Exception:
+                    current_price = float(kline_df["close"].iloc[-1])
+
+                result = compute_chip_distribution(
+                    kline_df, current_price, bins=80, stock_code=stock_code
+                )
+                if result:
+                    chip = ChipDistribution(
+                        code=stock_code,
+                        source="local_calculated",
+                        profit_ratio=result["profit_ratio"],
+                        avg_cost=result["avg_cost"],
+                        cost_90_low=result["cost_90_low"],
+                        cost_90_high=result["cost_90_high"],
+                        concentration_90=result["concentration_90"],
+                        cost_70_low=result["cost_70_low"],
+                        cost_70_high=result["cost_70_high"],
+                        concentration_70=result["concentration_70"],
+                    )
+                    logger.info(f"[筹码分布] {stock_code} 本地计算成功: profit={chip.profit_ratio:.1%}, avg={chip.avg_cost:.2f}")
+                    return chip
+        except Exception as e:
+            logger.warning(f"[筹码分布] {stock_code} 本地计算失败: {e}")
+
         logger.warning(f"[筹码分布] {stock_code} 所有数据源均失败")
         return None
 

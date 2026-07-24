@@ -11,7 +11,9 @@ A股自选股智能分析系统 - 搜索服务模块
 4. 搜索结果缓存和格式化
 """
 
+import json
 import logging
+import os
 import re
 import threading
 import time
@@ -2099,6 +2101,169 @@ class SearXNGSearchProvider(BaseSearchProvider):
         )
 
 
+class DDGSearchProvider(BaseSearchProvider):
+    """
+    DuckDuckGo 搜索引擎（免费，无限额，兜底方案）
+
+    特点：
+    - 零成本，无需 API Key
+    - 无限额，无速率限制
+    - 通过 ddgs Python 库调用 DuckDuckGo Instant Answer API
+    - 作为降级链最后一环，确保搜索永不空白
+    """
+
+    _IMPORT_ERROR: Optional[str] = None
+
+    def __init__(self):
+        super().__init__(["ddgs-free"], "DDG")
+
+    @property
+    def is_available(self) -> bool:
+        """DDGS 始终可用（无需 API Key）"""
+        return True
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        try:
+            from ddgs import DDGS  # type: ignore[import-untyped]
+            DDGSearchProvider._IMPORT_ERROR = None
+        except ImportError as e:
+            DDGSearchProvider._IMPORT_ERROR = str(e)
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message=f"ddgs 未安装，请运行: pip install ddgs ({e})",
+            )
+
+        try:
+            with DDGS() as ddgs:
+                raw_results = list(ddgs.text(query, max_results=max(max_results, 5), region='cn-zh'))
+
+            results: List[SearchResult] = []
+            for item in raw_results[:max_results]:
+                snippet = (item.get('body') or '')[:500]
+                results.append(SearchResult(
+                    title=item.get('title', ''),
+                    snippet=snippet,
+                    url=item.get('href', ''),
+                    source=item.get('source', ''),
+                ))
+
+            return SearchResponse(query=query, results=results, provider=self.name, success=True)
+
+        except Exception as e:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message=f"DDG 搜索失败: {e}",
+            )
+
+
+class AnySearchSearchProvider(BaseSearchProvider):
+    """
+    AnySearch 搜索引擎（finance domain 垂直搜索优化）
+
+    特点：
+    - 支持 domain=finance 垂直搜索，对股票/金融查询效果优于通用搜索
+    - 支持批量搜索、URL 内容提取等高级功能
+    - 免费额度，有速率限制
+
+    API 端点：https://api.anysearch.com/mcp (JSON-RPC 2.0)
+    """
+
+    _ENDPOINT = "https://api.anysearch.com/mcp"
+
+    def __init__(self, api_keys: List[str]):
+        super().__init__(api_keys, "AnySearch")
+
+    def _do_search(self, query: str, api_key: str, max_results: int, days: int = 7) -> SearchResponse:
+        try:
+            import requests
+        except ImportError:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message="requests 未安装",
+            )
+
+        try:
+            payload = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "tools/call",
+                "params": {
+                    "name": "search",
+                    "arguments": {"query": query, "domain": "finance"},
+                },
+            }
+            headers = {
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            }
+            resp = requests.post(self._ENDPOINT, json=payload, headers=headers, timeout=30)
+            resp.raise_for_status()
+            data = resp.json()
+
+            if "error" in data:
+                error_msg = data["error"].get("message", str(data["error"]))
+                return SearchResponse(
+                    query=query, results=[], provider=self.name, success=False,
+                    error_message=f"API 错误: {error_msg}",
+                )
+
+            result = data.get("result", {})
+            content = result.get("content", [])
+            text_parts: List[str] = []
+            for item in content:
+                if item.get("type") == "text":
+                    text_parts.append(item.get("text", ""))
+
+            raw_text = "\n".join(text_parts)
+
+            results: List[SearchResult] = []
+            try:
+                parsed = json.loads(raw_text)
+                if isinstance(parsed, list):
+                    for item in parsed[:max_results]:
+                        results.append(SearchResult(
+                            title=item.get("title", ""),
+                            snippet=(item.get("snippet") or item.get("description") or "")[:500],
+                            url=item.get("url", ""),
+                            source=item.get("source") or item.get("site", ""),
+                        ))
+                elif isinstance(parsed, dict):
+                    items = parsed.get("results") or parsed.get("items") or parsed.get("data") or []
+                    if isinstance(items, list):
+                        for item in items[:max_results]:
+                            results.append(SearchResult(
+                                title=item.get("title", ""),
+                                snippet=(item.get("snippet") or item.get("description") or "")[:500],
+                                url=item.get("url", item.get("link", "")),
+                                source=item.get("source") or item.get("site", ""),
+                            ))
+            except (json.JSONDecodeError, TypeError):
+                results.append(SearchResult(
+                    title=query,
+                    snippet=raw_text[:500],
+                    url="",
+                    source="AnySearch",
+                ))
+
+            return SearchResponse(query=query, results=results, provider=self.name, success=True)
+
+        except requests.exceptions.Timeout:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message="请求超时",
+            )
+        except requests.exceptions.ConnectionError:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message="连接失败",
+            )
+        except Exception as e:
+            return SearchResponse(
+                query=query, results=[], provider=self.name, success=False,
+                error_message=f"搜索失败: {e}",
+            )
+
+
 class SearchService:
     """
     搜索服务
@@ -2347,7 +2512,17 @@ class SearchService:
         if anspire_keys:
             self._providers.insert(0, AnspireSearchProvider(anspire_keys))
             logger.info(f"已配置 Anspire Search 搜索，共 {len(anspire_keys)} 个 API Key")
-            
+
+        # 8. DDG（免费无限额，无需 API Key，最终兜底）
+        self._providers.append(DDGSearchProvider())
+        logger.info("已配置 DDG 搜索（免费无限额兜底）")
+
+        # 9. AnySearch（finance domain 垂直搜索优化）
+        anysearch_key = os.environ.get("ANYSEARCH_API_KEY", "")
+        if anysearch_key:
+            self._providers.append(AnySearchSearchProvider([anysearch_key]))
+            logger.info("已配置 AnySearch 搜索（finance domain 垂直搜索优化）")
+
         if not self._providers:
             logger.warning("未配置任何搜索能力，新闻搜索功能将不可用")
 

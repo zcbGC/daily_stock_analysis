@@ -1,4 +1,5 @@
 import hashlib
+import functools
 import random
 import secrets
 import threading
@@ -12,8 +13,27 @@ from fake_useragent import UserAgent
 logger = logging.getLogger(__name__)
 
 original_request = requests.Session.request
+original_get = requests.get
+original_post = requests.post
 
 ua = UserAgent()
+
+# Chrome UA 轮换池（来自 aiagents-stock，补充 fake-useragent 库不可用时的兜底）
+_CHROME_UA_POOL = [
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:120.0) Gecko/20100101 Firefox/120.0',
+    'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36 Edg/120.0.0.0',
+]
+
+
+def _random_ua() -> str:
+    """获取随机 UA，优先 fake-useragent 库，失败时回退到内置 Chrome UA 池"""
+    try:
+        return ua.random
+    except Exception:
+        return random.choice(_CHROME_UA_POOL)
 
 
 class AuthCache:
@@ -179,4 +199,61 @@ def eastmoney_patch():
 
     # 全局替换 Session 的 request 入口
     requests.Session.request = patched_request
+
+    # --- 修补 requests.get（兼容直接调 requests.get 的代码，如 efinance） ---
+    @functools.wraps(original_get)
+    def _patched_get(url, **kwargs):
+        headers = kwargs.pop('headers', None) or {}
+        if 'User-Agent' not in headers:
+            headers['User-Agent'] = _random_ua()
+        if 'Referer' not in headers:
+            headers['Referer'] = 'https://quote.eastmoney.com/'
+        kwargs['headers'] = headers
+        if 'timeout' not in kwargs or kwargs['timeout'] is None:
+            kwargs['timeout'] = 30
+        return original_get(url, **kwargs)
+
+    requests.get = _patched_get
+
+    # --- 修补 requests.post ---
+    @functools.wraps(original_post)
+    def _patched_post(url, **kwargs):
+        headers = kwargs.pop('headers', None) or {}
+        if 'User-Agent' not in headers:
+            headers['User-Agent'] = _random_ua()
+        if 'Referer' not in headers:
+            headers['Referer'] = 'https://quote.eastmoney.com/'
+        kwargs['headers'] = headers
+        if 'timeout' not in kwargs or kwargs['timeout'] is None:
+            kwargs['timeout'] = 30
+        return original_post(url, **kwargs)
+
+    requests.post = _patched_post
+
+    # --- 修补 akshare 内部的请求重试函数 ---
+    try:
+        import akshare as _ak
+        if hasattr(_ak, 'request') and hasattr(_ak.request, 'make_request_with_retry_json'):
+            _orig_retry = _ak.request.make_request_with_retry_json
+
+            @functools.wraps(_orig_retry)
+            def _patched_retry_json(url, params=None, headers=None, proxies=None, max_retries=3, retry_delay=1):
+                if headers is None:
+                    headers = {}
+                final_headers = {
+                    'User-Agent': _random_ua(),
+                    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8',
+                    'Accept-Language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                    'Referer': 'https://quote.eastmoney.com/',
+                }
+                final_headers.update(headers)
+                return _orig_retry(url, params=params, headers=final_headers,
+                                   proxies=proxies, max_retries=max_retries, retry_delay=retry_delay)
+
+            _ak.request.make_request_with_retry_json = _patched_retry_json
+            logger.info("[EastmoneyPatch] akshare 内部请求重试函数已修补")
+    except (ImportError, AttributeError) as e:
+        logger.debug("[EastmoneyPatch] 跳过 akshare 内部修补: %s", e)
+
     _patch_sign.set_patch(True)
+    logger.info("[EastmoneyPatch] 补丁已应用 — Session.request + requests.get/post + akshare 内部修补 + NID Token")

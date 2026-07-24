@@ -2004,7 +2004,36 @@ class AkshareFetcher(BaseFetcher):
                 ],
             )
         except Exception as e:
-            logger.warning(f"[Akshare] 获取概念排行失败: {e}")
+            logger.warning(f"[Akshare] 东财接口获取概念排行失败: {e}，尝试同花顺接口")
+
+        # 降级：同花顺概念排行（非东财，push2阻断后兜底）
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            logger.info("[API调用] ak.stock_board_concept_name_ths() 获取概念排行(同花顺)...")
+            df = ak.stock_board_concept_name_ths()
+            if df is not None and not df.empty:
+                change_col = '涨跌幅'
+                name_col = '板块名称'
+                if change_col in df.columns and name_col in df.columns:
+                    df = df.copy()
+                    df[change_col] = pd.to_numeric(df[change_col], errors='coerce')
+                    df = df.dropna(subset=[change_col])
+                    top = df.nlargest(n, change_col)
+                    bottom = df.nsmallest(n, change_col)
+                    return (
+                        [{'name': str(row[name_col]), 'change_pct': float(row[change_col])} for _, row in top.iterrows()],
+                        [{'name': str(row[name_col]), 'change_pct': float(row[change_col])} for _, row in bottom.iterrows()],
+                    )
+                else:
+                    # 同花顺概念排行可能只有 name/code 列，无涨跌幅
+                    names = df['name'].tolist() if 'name' in df.columns else df.iloc[:, 0].tolist()
+                    return (
+                        [{'name': str(n), 'change_pct': 0.0} for n in names[:n]],
+                        [{'name': str(n), 'change_pct': 0.0} for n in names[-n:]],
+                    )
+        except Exception as e:
+            logger.warning(f"[Akshare] 同花顺接口获取概念排行也失败: {e}")
             return None
 
     def get_hot_stocks(self, n: int = 10) -> Optional[List[Dict[str, Any]]]:
@@ -2217,6 +2246,91 @@ class AkshareFetcher(BaseFetcher):
             if all(keyword in col_text for keyword in keywords):
                 return col
         return None
+
+    def get_base_info(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """获取个股基本面信息（雪球源，非东财）。
+
+        替代 efinance 的 get_base_info()（依赖 eastmoney.com，push2 阻断后不可用）。
+        数据来源：stock_individual_spot_xq() — 雪球个股行情快照。
+
+        Returns:
+            dict with keys: 股票简称, 市盈率(动), 市盈率(静), 市盈率(TTM), 市净率,
+            每股收益, 每股净资产, 股息率, 总市值, 流通市值, 52周最高/最低 等
+        """
+        import akshare as ak
+
+        # 构造雪球 symbol 格式: SH600519 / SZ000001
+        symbol = _to_xq_symbol(stock_code)
+        if not symbol:
+            logger.warning(f"[Akshare] get_base_info: 不支持的股票代码格式: {stock_code}")
+            return None
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            logger.info(f"[API调用] ak.stock_individual_spot_xq(symbol={symbol}) 获取基本面(雪球)...")
+            df = ak.stock_individual_spot_xq(symbol=symbol)
+            if df is None or df.empty:
+                logger.warning(f"[API返回] stock_individual_spot_xq 返回空数据")
+                return None
+
+            info: Dict[str, Any] = {}
+            for _, row in df.iterrows():
+                item = str(row.get('item', ''))
+                value = row.get('value')
+                if item and value is not None:
+                    info[item] = value
+
+            logger.info(f"[API返回] stock_individual_spot_xq 成功: {len(info)} 个字段")
+            return info
+
+        except Exception as e:
+            logger.warning(f"[Akshare] 获取基本面(雪球)失败: {e}")
+            return None
+
+    def get_belong_board(self, stock_code: str) -> Optional[pd.DataFrame]:
+        """获取个股所属板块（雪球源，非东财）。
+
+        替代 efinance 的 get_belong_board()（依赖 eastmoney.com，push2 阻断后不可用）。
+        数据来源：stock_individual_basic_info_xq() — 雪球个股基本信息。
+        比东财版简略（仅返回企业分类+所属行业），但覆盖核心分类需求。
+
+        Returns:
+            DataFrame with columns: item, value (含 classi_name, affiliate_industry 等)
+        """
+        import akshare as ak
+
+        symbol = _to_xq_symbol(stock_code)
+        if not symbol:
+            logger.warning(f"[Akshare] get_belong_board: 不支持的股票代码: {stock_code}")
+            return None
+
+        try:
+            self._set_random_user_agent()
+            self._enforce_rate_limit()
+            logger.info(f"[API调用] ak.stock_individual_basic_info_xq(symbol={symbol}) 获取基本信息(雪球)...")
+            df = ak.stock_individual_basic_info_xq(symbol=symbol)
+            if df is None or df.empty:
+                logger.warning(f"[API返回] stock_individual_basic_info_xq 返回空数据")
+                return None
+
+            logger.info(f"[API返回] stock_individual_basic_info_xq 成功: {len(df)} 个字段")
+            return df
+
+        except Exception as e:
+            logger.warning(f"[Akshare] 获取所属板块(雪球)失败: {e}")
+            return None
+
+
+
+def _to_xq_symbol(stock_code: str) -> Optional[str]:
+    """将纯数字股票代码转为雪球 symbol 格式（SH/SZ 前缀）。"""
+    code = str(stock_code).strip()
+    if code.startswith("6"):
+        return f"SH{code}"
+    if code.startswith(("0", "3", "1", "2", "4", "5", "7", "8", "9")):
+        return f"SZ{code}"
+    return None
 
 
 if __name__ == "__main__":

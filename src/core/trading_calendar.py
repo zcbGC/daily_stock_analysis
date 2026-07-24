@@ -495,10 +495,14 @@ def build_market_phase_context(
     if requested_phase != "auto" and phase == MarketPhase.UNKNOWN:
         phase = MarketPhase(requested_phase)
 
-    effective_daily_bar_date = get_effective_trading_date(
-        market,
-        current_time=current_time,
-    )
+    # 盘中/午休/盘后 → 当天日期（与 _resolve_resume_target_date 保持一致）
+    if phase in {MarketPhase.INTRADAY, MarketPhase.LUNCH_BREAK, MarketPhase.POSTMARKET}:
+        effective_daily_bar_date = market_now.date()
+    else:
+        effective_daily_bar_date = get_effective_trading_date(
+            market,
+            current_time=current_time,
+        )
     is_trading_day, is_market_open_now, is_partial_bar = _phase_booleans(phase)
     minutes_to_open, minutes_to_close, minutes_calendar_error = _phase_minutes(
         market,

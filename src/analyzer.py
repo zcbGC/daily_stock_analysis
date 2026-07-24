@@ -193,7 +193,6 @@ def _phase_aware_quote_labels(context: Dict[str, Any]) -> Tuple[str, str]:
 
     if (
         phase in {"intraday", "lunch_break", "closing_auction"}
-        and phase_context.get("is_partial_bar") is True
     ):
         return "最新行情", "盘中估算价"
 
@@ -4266,6 +4265,12 @@ class GeminiAnalyzer:
                 "turnover_rate": self._format_percent(realtime.get('turnover_rate')),
                 "source": getattr(realtime.get('source'), 'value', realtime.get('source', 'N/A')),
             })
+
+        # 传递市场阶段信息，供通知格式化时决定"收盘"vs"盘中估算价"
+        phase_context = context.get("market_phase_context")
+        if isinstance(phase_context, dict):
+            snapshot["_phase"] = phase_context.get("phase", "")
+            snapshot["_is_partial_bar"] = phase_context.get("is_partial_bar", False)
 
         return snapshot
 
