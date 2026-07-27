@@ -413,12 +413,17 @@ class AkshareFundamentalAdapter:
         result["status"] = "partial" if has_content else "not_supported"
         return result
 
+    _XUEQIU_TOKEN_EXPIRED = False  # Class-level flag to avoid repeated warnings
+
     def _fetch_capital_flow_xueqiu(self, stock_code: str) -> Optional[Dict[str, Any]]:
         """Fetch individual stock capital flow from Xueqiu API.
 
         Requires a valid ``xq_a_token`` (login at xueqiu.com → F12 → Cookies).
         The API returns minute-by-minute cumulative net capital flow; we take
         the latest value as today's total net flow (in yuan).
+
+        Returns ``None`` if no token configured, or a dict with ``_error`` key
+        if the token appears expired/invalid (so the AI can report it).
         """
         try:
             import os as _os
@@ -438,15 +443,23 @@ class AkshareFundamentalAdapter:
                 },
                 timeout=5,
             )
+            if resp.status_code == 400:
+                if not self._XUEQIU_TOKEN_EXPIRED:
+                    logger.warning(
+                        "雪球Token已过期或无效 (HTTP 400)。请重新登录 xueqiu.com，"
+                        "F12 → Application → Cookies → xq_a_token，更新 .env 中的 XUEQIU_TOKEN"
+                    )
+                    self._XUEQIU_TOKEN_EXPIRED = True
+                return {"_error": "expired"}
             if resp.status_code != 200:
                 return None
             data = resp.json().get("data", {})
             items = data.get("items") or []
             if not items:
                 return None
+            self._XUEQIU_TOKEN_EXPIRED = False
             # Last data point = cumulative net flow for today (yuan → 万元)
             main_net_inflow = round(float(items[-1]["amount"]) / 10000, 2)
-            # Compute 5-day from the daily cumulative trend (approximate)
             return {
                 "main_net_inflow": main_net_inflow,
                 "inflow_5d": None,

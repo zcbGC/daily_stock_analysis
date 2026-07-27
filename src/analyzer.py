@@ -3918,6 +3918,13 @@ class GeminiAnalyzer:
 > 资金流向只能作为价格位置的过滤器：接近压力且主力流出时不得追买；接近支撑且未放量跌破时，优先判断为持有观察、震荡或洗盘观察。
 """
 
+        # 雪球Token过期检测
+        if isinstance(stock_flow, dict) and stock_flow.get("_error") == "expired":
+            prompt += """
+### ⚠️ 雪球Token已过期
+资金流向数据不可用。请重新登录 xueqiu.com，F12 → Application → Cookies → xq_a_token，更新 .env 中的 XUEQIU_TOKEN。
+"""
+
         # 限售解禁
         lockup_block = (
             fundamental_context.get("lockup_expiry", {})
