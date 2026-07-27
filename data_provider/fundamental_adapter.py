@@ -413,6 +413,48 @@ class AkshareFundamentalAdapter:
         result["status"] = "partial" if has_content else "not_supported"
         return result
 
+    def _fetch_capital_flow_xueqiu(self, stock_code: str) -> Optional[Dict[str, Any]]:
+        """Fetch individual stock capital flow from Xueqiu API.
+
+        Requires a valid ``xq_a_token`` (login at xueqiu.com → F12 → Cookies).
+        The API returns minute-by-minute cumulative net capital flow; we take
+        the latest value as today's total net flow (in yuan).
+        """
+        try:
+            import os as _os
+            token = _os.getenv("XUEQIU_TOKEN", "").strip()
+            if not token:
+                return None
+            import requests as _requests
+            stock_code_pure = str(stock_code).replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
+            market = "SH" if stock_code_pure.startswith(("6", "5", "9")) else "SZ"
+            symbol = f"{market}{stock_code_pure}"
+            resp = _requests.get(
+                f"https://stock.xueqiu.com/v5/stock/capital/flow.json?symbol={symbol}",
+                headers={
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                    "Cookie": f"xq_a_token={token}",
+                    "Referer": "https://xueqiu.com/",
+                },
+                timeout=5,
+            )
+            if resp.status_code != 200:
+                return None
+            data = resp.json().get("data", {})
+            items = data.get("items") or []
+            if not items:
+                return None
+            # Last data point = cumulative net flow for today (yuan → 万元)
+            main_net_inflow = round(float(items[-1]["amount"]) / 10000, 2)
+            # Compute 5-day from the daily cumulative trend (approximate)
+            return {
+                "main_net_inflow": main_net_inflow,
+                "inflow_5d": None,
+                "inflow_10d": None,
+            }
+        except Exception:
+            return None
+
     def get_capital_flow(self, stock_code: str, top_n: int = 5) -> Dict[str, Any]:
         """
         Return stock + sector capital flow.
@@ -425,46 +467,55 @@ class AkshareFundamentalAdapter:
             "errors": [],
         }
 
-        stock_df, stock_source, stock_errors = self._call_df_candidates([
-            ("stock_individual_fund_flow", {"stock": stock_code}),
-            ("stock_individual_fund_flow", {"symbol": stock_code}),
-            ("stock_individual_fund_flow", {}),
-            ("stock_main_fund_flow", {"symbol": stock_code}),
-            ("stock_main_fund_flow", {}),
-        ])
-        result["errors"].extend(stock_errors)
-        if stock_df is not None:
-            row = _extract_latest_row(stock_df, stock_code)
-            if row is not None:
-                net_inflow = _safe_float(_pick_by_keywords(row, ["主力净流入", "净流入", "净额"]))
-                inflow_5d = _safe_float(_pick_by_keywords(row, ["5日", "五日"]))
-                inflow_10d = _safe_float(_pick_by_keywords(row, ["10日", "十日"]))
-                result["stock_flow"] = {
-                    "main_net_inflow": net_inflow,
-                    "inflow_5d": inflow_5d,
-                    "inflow_10d": inflow_10d,
-                }
-                result["source_chain"].append(f"capital_stock:{stock_source}")
+        # Try Xueqiu first (reliable, non-Eastmoney)
+        stock_flow = self._fetch_capital_flow_xueqiu(stock_code)
+        if stock_flow:
+            result["stock_flow"] = stock_flow
+            result["source_chain"].append("capital_stock:xueqiu")
 
-        sector_df, sector_source, sector_errors = self._call_df_candidates([
-            ("stock_sector_fund_flow_rank", {}),
-            ("stock_sector_fund_flow_summary", {}),
-        ])
-        result["errors"].extend(sector_errors)
-        if sector_df is not None:
-            name_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("板块", "行业", "名称", "name"))), None)
-            flow_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("净流入", "主力", "flow", "净额"))), None)
-            if name_col and flow_col:
-                work_df = sector_df[[name_col, flow_col]].copy()
-                work_df[flow_col] = pd.to_numeric(work_df[flow_col], errors="coerce")
-                work_df = work_df.dropna(subset=[flow_col])
-                top_df = work_df.nlargest(top_n, flow_col)
-                bottom_df = work_df.nsmallest(top_n, flow_col)
-                result["sector_rankings"] = {
-                    "top": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in top_df.iterrows()],
-                    "bottom": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in bottom_df.iterrows()],
-                }
-                result["source_chain"].append(f"capital_sector:{sector_source}")
+        if not result["stock_flow"]:
+            stock_df, stock_source, stock_errors = self._call_df_candidates([
+                ("stock_individual_fund_flow", {"stock": stock_code}),
+                ("stock_individual_fund_flow", {"symbol": stock_code}),
+                ("stock_individual_fund_flow", {}),
+                ("stock_main_fund_flow", {"symbol": stock_code}),
+                ("stock_main_fund_flow", {}),
+                ])
+            result["errors"].extend(stock_errors)
+            if stock_df is not None:
+                row = _extract_latest_row(stock_df, stock_code)
+                if row is not None:
+                    net_inflow = _safe_float(_pick_by_keywords(row, ["主力净流入", "净流入", "净额"]))
+                    inflow_5d = _safe_float(_pick_by_keywords(row, ["5日", "五日"]))
+                    inflow_10d = _safe_float(_pick_by_keywords(row, ["10日", "十日"]))
+                    result["stock_flow"] = {
+                        "main_net_inflow": net_inflow,
+                        "inflow_5d": inflow_5d,
+                        "inflow_10d": inflow_10d,
+                    }
+                    result["source_chain"].append(f"capital_stock:{stock_source}")
+
+        # Sector rankings only if we don't have stock flow yet (avoid slow akshare calls)
+        if not result["stock_flow"]:
+            sector_df, sector_source, sector_errors = self._call_df_candidates([
+                ("stock_sector_fund_flow_rank", {}),
+                ("stock_sector_fund_flow_summary", {}),
+            ])
+            result["errors"].extend(sector_errors)
+            if sector_df is not None:
+                name_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("板块", "行业", "名称", "name"))), None)
+                flow_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("净流入", "主力", "flow", "净额"))), None)
+                if name_col and flow_col:
+                    work_df = sector_df[[name_col, flow_col]].copy()
+                    work_df[flow_col] = pd.to_numeric(work_df[flow_col], errors="coerce")
+                    work_df = work_df.dropna(subset=[flow_col])
+                    top_df = work_df.nlargest(top_n, flow_col)
+                    bottom_df = work_df.nsmallest(top_n, flow_col)
+                    result["sector_rankings"] = {
+                        "top": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in top_df.iterrows()],
+                        "bottom": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in bottom_df.iterrows()],
+                    }
+                    result["source_chain"].append(f"capital_sector:{sector_source}")
 
         has_content = bool(result["stock_flow"] or result["sector_rankings"]["top"] or result["sector_rankings"]["bottom"])
         result["status"] = "partial" if has_content else "not_supported"
@@ -529,4 +580,121 @@ class AkshareFundamentalAdapter:
         )
         result["status"] = "ok"
         result["source_chain"].append(f"dragon_tiger:{source}")
+        return result
+
+    def get_lockup_expiry(self, stock_code: str, lookahead_days: int = 180) -> Dict[str, Any]:
+        """Return upcoming restricted-share release (限售解禁) for the stock.
+
+        Queries akshare's market-wide restricted-release calendar and filters
+        for *stock_code*. Returns the nearest upcoming or most recent release.
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "text": "",
+            "next_date": None,
+            "next_shares": None,
+            "source_chain": [],
+            "errors": [],
+        }
+        try:
+            import akshare as ak
+            now = datetime.now()
+            start_date = (now - timedelta(days=30)).strftime("%Y%m%d")
+            end_date = (now + timedelta(days=lookahead_days)).strftime("%Y%m%d")
+            df = ak.stock_restricted_release_detail_em(start_date=start_date, end_date=end_date)
+            if df is None or df.empty:
+                result["status"] = "ok"
+                result["text"] = "无近期限售解禁"
+                return result
+            code_col = next((c for c in df.columns if "代码" in str(c)), None)
+            if code_col is None:
+                result["errors"].append("unknown_columns")
+                result["text"] = "限售解禁数据格式未知"
+                return result
+            stock_code_pure = str(stock_code).replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
+            matches = df[df[code_col].astype(str).str.strip() == stock_code_pure]
+            if matches.empty:
+                result["status"] = "ok"
+                result["text"] = "无近期限售解禁"
+                return result
+            row = matches.sort_values(by=code_col).iloc[0] if len(matches) > 1 else matches.iloc[0]
+            date_col = next((c for c in matches.columns if "日期" in str(c)), None)
+            shares_col = next((c for c in matches.columns if "数量" in str(c) or "股数" in str(c)), None)
+            ratio_col = next((c for c in matches.columns if "比例" in str(c)), None)
+            date_val = str(row[date_col])[:10] if date_col is not None and row.get(date_col) is not None else "未知"
+            shares_val = str(row[shares_col]) if shares_col is not None and row.get(shares_col) is not None else None
+            ratio_val = str(row[ratio_col]) if ratio_col is not None and row.get(ratio_col) is not None else None
+            parts = [f"解禁日期: {date_val}"]
+            if shares_val:
+                parts.append(f"解禁股数: {shares_val}万股" if "万" not in str(shares_val) else f"解禁股数: {shares_val}")
+            if ratio_val:
+                parts.append(f"占总股本: {ratio_val}%")
+            result["text"] = " / ".join(parts)
+            result["next_date"] = date_val
+            result["next_shares"] = shares_val
+            result["status"] = "ok"
+            result["source_chain"].append("lockup_expiry:akshare_em")
+        except Exception as e:
+            result["errors"].append(str(e)[:200])
+            result["text"] = "限售解禁数据获取失败"
+        return result
+
+    def get_insider_trading(self, stock_code: str) -> Dict[str, Any]:
+        """Return recent insider shareholding changes (股东增减持) for the stock.
+
+        Uses akshare's per-stock SSE/SZSE APIs (~0.7s) instead of the
+        market-wide ``stock_hold_management_detail_em`` (188s).
+        """
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "text": "",
+            "recent_changes": [],
+            "source_chain": [],
+            "errors": [],
+        }
+        try:
+            import akshare as ak
+            stock_code_pure = str(stock_code).replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
+            if stock_code_pure.startswith(("6", "5", "9")):
+                df = ak.stock_share_hold_change_sse(symbol=stock_code_pure)
+                source = "sse"
+            elif stock_code_pure.startswith(("0", "3", "2")):
+                df = ak.stock_share_hold_change_szse(symbol=stock_code_pure)
+                source = "szse"
+            else:
+                result["text"] = "不支持的交易所"
+                return result
+            if df is None or df.empty:
+                result["status"] = "ok"
+                result["text"] = "近期无股东增减持记录"
+                return result
+            recent = df.head(3)
+            items = []
+            for _, row in recent.iterrows():
+                name = str(row.get("股东名称", row.get("公司名称", "")))
+                change_type = str(row.get("变动原因", row.get("变动类型", "")))
+                shares = row.get("变动数", row.get("变动数量", None))
+                price = row.get("本次变动平均价格", row.get("平均价格", None))
+                date = str(row.get("变动日期", row.get("填报日期", "")))[:10]
+                parts = []
+                if name and name != "nan":
+                    parts.append(name)
+                if date and date != "nan":
+                    parts.append(date)
+                if shares is not None and str(shares) != "nan":
+                    direction = "增持" if float(shares) > 0 else "减持"
+                    parts.append(f"{direction}{abs(int(float(shares)))}股")
+                if price is not None and str(price) != "nan":
+                    parts.append(f"均价{float(price):.2f}")
+                if change_type and change_type != "nan":
+                    parts.append(change_type)
+                if parts:
+                    items.append(" / ".join(parts))
+            result["text"] = "; ".join(items) if items else "近期无股东增减持记录"
+            result["recent_changes"] = items
+            result["status"] = "ok"
+            result["source_chain"].append(f"insider_trading:akshare_{source}")
+        except Exception as e:
+            result["errors"].append(str(e)[:200])
+            result["text"] = "股东增减持数据获取失败"
         return result

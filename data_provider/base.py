@@ -2928,6 +2928,8 @@ class DataFetcherManager:
             "institution": {},
             "capital_flow": {},
             "dragon_tiger": {},
+            "lockup_expiry": {},
+            "insider_trading": {},
             "boards": {},
             "belong_boards": [],
             "coverage": {},
@@ -3224,6 +3226,8 @@ class DataFetcherManager:
             "institution": {},
             "capital_flow": {},
             "dragon_tiger": {},
+            "lockup_expiry": {},
+            "insider_trading": {},
             "boards": {},
             "coverage": {},
             "source_chain": [],
@@ -3406,6 +3410,12 @@ class DataFetcherManager:
                 [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
                 ["etf not fully supported"],
             )
+            result_ctx["lockup_expiry"] = self._build_fundamental_block(
+                "not_supported", {}, [], ["etf not fully supported"],
+            )
+            result_ctx["insider_trading"] = self._build_fundamental_block(
+                "not_supported", {}, [], ["etf not fully supported"],
+            )
             result_ctx["status"] = "partial"
         else:
             capital_flow_budget = min(fetch_timeout, remaining_seconds)
@@ -3428,6 +3438,22 @@ class DataFetcherManager:
                 stock_code,
                 budget_seconds=min(fetch_timeout, remaining_seconds),
             )
+
+            lockup_budget = min(fetch_timeout, remaining_seconds)
+            lockup_start = time.time()
+            result_ctx["lockup_expiry"] = self.get_lockup_expiry_context(
+                stock_code,
+                budget_seconds=lockup_budget,
+            )
+            _consume_budget(int((time.time() - lockup_start) * 1000))
+
+            insider_budget = min(fetch_timeout, remaining_seconds)
+            insider_start = time.time()
+            result_ctx["insider_trading"] = self.get_insider_trading_context(
+                stock_code,
+                budget_seconds=insider_budget,
+            )
+            _consume_budget(int((time.time() - insider_start) * 1000))
 
         block_statuses = {
             "valuation": result_ctx["valuation"].get("status", "not_supported"),
@@ -3488,6 +3514,14 @@ class DataFetcherManager:
                 ["not supported"],
             )
 
+        if timeout <= 0:
+            return self._build_fundamental_block(
+                "failed",
+                {},
+                [{"provider": "fundamental_pipeline", "result": "failed", "duration_ms": 0}],
+                ["fundamental stage timeout"],
+            )
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
         if timeout <= 0:
             return self._build_fundamental_block(
                 "failed",
@@ -3584,6 +3618,62 @@ class DataFetcherManager:
                 str(payload.get("status", "ok")),
                 cost_ms,
             ),
+            list(payload.get("errors", [])) + ([err] if err else []),
+        )
+
+    def get_lockup_expiry_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """限售解禁块（fail-open）。"""
+        from src.config import get_config
+
+        config = get_config()
+        stock_code = normalize_stock_code(stock_code)
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
+        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+            return self._build_fundamental_block(
+                "not_supported", {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["not supported"],
+            )
+        if timeout <= 0:
+            return self._build_fundamental_block("failed", {}, [], ["fundamental stage timeout"])
+        payload, err, cost_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_lockup_expiry(stock_code),
+            timeout, "lockup_expiry",
+        )
+        if not isinstance(payload, dict):
+            return self._build_fundamental_block("failed", {}, [], [err or "lockup_expiry failed"])
+        return self._build_fundamental_block(
+            payload.get("status", "partial") if isinstance(payload.get("status"), str) else "partial",
+            {"text": str(payload.get("text", "")), "next_date": payload.get("next_date")},
+            self._normalize_source_chain(payload.get("source_chain", []), "lockup_expiry", str(payload.get("status", "ok")), cost_ms),
+            list(payload.get("errors", [])) + ([err] if err else []),
+        )
+
+    def get_insider_trading_context(self, stock_code: str, budget_seconds: Optional[float] = None) -> Dict[str, Any]:
+        """股东增减持块（fail-open）。"""
+        from src.config import get_config
+
+        config = get_config()
+        stock_code = normalize_stock_code(stock_code)
+        timeout = float(budget_seconds if budget_seconds is not None else config.fundamental_fetch_timeout_seconds)
+        if _market_tag(stock_code) != "cn" or _is_etf_code(stock_code):
+            return self._build_fundamental_block(
+                "not_supported", {},
+                [{"provider": "fundamental_pipeline", "result": "not_supported", "duration_ms": 0}],
+                ["not supported"],
+            )
+        if timeout <= 0:
+            return self._build_fundamental_block("failed", {}, [], ["fundamental stage timeout"])
+        payload, err, cost_ms = self._run_with_retry(
+            lambda: self._fundamental_adapter.get_insider_trading(stock_code),
+            timeout, "insider_trading",
+        )
+        if not isinstance(payload, dict):
+            return self._build_fundamental_block("failed", {}, [], [err or "insider_trading failed"])
+        return self._build_fundamental_block(
+            payload.get("status", "partial") if isinstance(payload.get("status"), str) else "partial",
+            {"text": str(payload.get("text", "")), "recent_changes": payload.get("recent_changes", [])},
+            self._normalize_source_chain(payload.get("source_chain", []), "insider_trading", str(payload.get("status", "ok")), cost_ms),
             list(payload.get("errors", [])) + ([err] if err else []),
         )
 

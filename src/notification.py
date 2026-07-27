@@ -1339,6 +1339,17 @@ class NotificationService(
                         report_lines.append(f"**🚨 {labels['risk_alerts_label']}**:")
                         for alert in risk_alerts:
                             report_lines.append(f"- {alert}")
+                    # 限售解禁 / 股东增减持
+                    lockup = intel.get('lockup_expiry', '')
+                    insider = intel.get('insider_trading', '')
+                    if lockup or insider:
+                        alert_items = []
+                        if lockup:
+                            alert_items.append(f"🔒 限售解禁: {lockup}")
+                        if insider:
+                            alert_items.append(f"👤 股东动态: {insider}")
+                        report_lines.append("")
+                        report_lines.extend(alert_items)
                     # 利好催化
                     catalysts = intel.get('positive_catalysts', [])
                     if catalysts:
@@ -1447,6 +1458,26 @@ class NotificationService(
                         if chip_unavailable_reason:
                             report_lines.extend([
                                 f"**{labels['chip_label']}**: {chip_unavailable_reason}",
+                                "",
+                            ])
+
+                    # 资金面
+                    cap = data_persp.get('capital_flow', {}) if data_persp else {}
+                    if cap:
+                        cap_verdict = cap.get('capital_verdict', '')
+                        parts = []
+                        if cap.get('main_net_inflow'):
+                            parts.append(f"{cap['main_net_inflow']}")
+                        if cap.get('north_bound'):
+                            parts.append(f"北向: {cap['north_bound']}")
+                        if cap.get('margin_trading'):
+                            parts.append(f"融资: {cap['margin_trading']}")
+                        if cap.get('block_trades'):
+                            parts.append(f"大宗: {cap['block_trades']}")
+                        if parts:
+                            cap_line = " | ".join(parts)
+                            report_lines.extend([
+                                f"**💰 资金面**{' ' + cap_verdict if cap_verdict else ''}: {cap_line}",
                                 "",
                             ])
 

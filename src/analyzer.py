@@ -1943,12 +1943,21 @@ class GeminiAnalyzer:
                 "avg_cost": 平均成本,
                 "concentration": 筹码集中度,
                 "chip_health": "健康/一般/警惕"
+            },
+            "capital_flow": {
+                "main_net_inflow": "主力净流入(万元)或方向描述",
+                "north_bound": "北向资金动向",
+                "margin_trading": "融资融券余额变化",
+                "block_trades": "大宗交易（如有）",
+                "capital_verdict": "资金面综合判断：偏多/中性/偏空"
             }
         },
 
         "intelligence": {
             "latest_news": "【最新消息】近期重要新闻摘要",
-            "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
+            "risk_alerts": ["风险点1：具体描述，注明严重程度和概率", "风险点2：具体描述"],
+            "lockup_expiry": "近期限售解禁（日期/规模/占比）",
+            "insider_trading": "股东增减持动态",
             "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
             "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
             "sentiment_summary": "舆情情绪一句话总结"
@@ -2067,7 +2076,9 @@ class GeminiAnalyzer:
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
+
+以下文字字段输出时请为关键结论标注数据来源。格式：`[依据: ①xx + ②xx]`，矛盾时 `[依据: ①xx vs ④xx]`，纯推理 `[依据: 推断]`。编号：①技术面(K线/均线/形态) ②指标(RSI/MACD/KDJ/BOLL) ③量价(量比/换手率) ④资金面(主力净流入/北向/融资融券/大宗交易) ⑤消息面(新闻/公告/政策) ⑥基本面(PE/PB/ROE/财报) ⑦筹码(获利比例/均成本/集中度) ⑧大盘(板块轮动/涨跌分布)。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
@@ -2131,12 +2142,21 @@ class GeminiAnalyzer:
                 "avg_cost": 平均成本,
                 "concentration": 筹码集中度,
                 "chip_health": "健康/一般/警惕"
+            },
+            "capital_flow": {
+                "main_net_inflow": "主力净流入(万元)或方向描述",
+                "north_bound": "北向资金动向",
+                "margin_trading": "融资融券余额变化",
+                "block_trades": "大宗交易（如有）",
+                "capital_verdict": "资金面综合判断：偏多/中性/偏空"
             }
         },
 
         "intelligence": {
             "latest_news": "【最新消息】近期重要新闻摘要",
-            "risk_alerts": ["风险点1：具体描述", "风险点2：具体描述"],
+            "risk_alerts": ["风险点1：具体描述，注明严重程度和概率", "风险点2：具体描述"],
+            "lockup_expiry": "近期限售解禁（日期/规模/占比）",
+            "insider_trading": "股东增减持动态",
             "positive_catalysts": ["利好1：具体描述", "利好2：具体描述"],
             "earnings_outlook": "业绩预期分析（基于年报预告、业绩快报等）",
             "sentiment_summary": "舆情情绪一句话总结"
@@ -2253,7 +2273,9 @@ class GeminiAnalyzer:
 - 只有在跌破关键支撑、主力资金持续流出或风险显著放大时，才能给出卖出/减仓。
 - 必须输出 `dashboard.phase_decision` 七字段；盘中/午休/临近收盘要给出当前动作、观察条件和下一次检查点。
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
-- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。"""
+- 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
+
+以下文字字段输出时请为关键结论标注数据来源。格式：`[依据: ①xx + ②xx]`，矛盾时 `[依据: ①xx vs ④xx]`，纯推理 `[依据: 推断]`。编号：①技术面(K线/均线/形态) ②指标(RSI/MACD/KDJ/BOLL) ③量价(量比/换手率) ④资金面(主力净流入/北向/融资融券/大宗交易) ⑤消息面(新闻/公告/政策) ⑥基本面(PE/PB/ROE/财报) ⑦筹码(获利比例/均成本/集中度) ⑧大盘(板块轮动/涨跌分布)。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 
@@ -3894,6 +3916,44 @@ class GeminiAnalyzer:
 | 资金流出靠前板块 | {bottom_sector_text} | 板块风险参考 |
 
 > 资金流向只能作为价格位置的过滤器：接近压力且主力流出时不得追买；接近支撑且未放量跌破时，优先判断为持有观察、震荡或洗盘观察。
+"""
+
+        # 限售解禁
+        lockup_block = (
+            fundamental_context.get("lockup_expiry", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        lockup_data = (
+            lockup_block.get("data", {})
+            if isinstance(lockup_block, dict)
+            else {}
+        )
+        if isinstance(lockup_data, dict) and lockup_data.get("text"):
+            prompt += f"""
+### 限售解禁
+{lockup_data['text']}
+
+> 如有限售解禁，需评估对股价的短期压力。无解禁则标注为"无近期限售解禁"。
+"""
+
+        # 股东增减持
+        insider_block = (
+            fundamental_context.get("insider_trading", {})
+            if isinstance(fundamental_context, dict)
+            else {}
+        )
+        insider_data = (
+            insider_block.get("data", {})
+            if isinstance(insider_block, dict)
+            else {}
+        )
+        if isinstance(insider_data, dict) and insider_data.get("text"):
+            prompt += f"""
+### 股东增减持
+{insider_data['text']}
+
+> 大股东增持可能传递信心，减持需关注原因。无记录则标注。
 """
 
         # 添加三大法人动向（台股筹码过滤器）— tw-only；仅当 institution 区块 status='ok'
