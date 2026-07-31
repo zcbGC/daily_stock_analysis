@@ -745,7 +745,7 @@ def _run_eod_summary(config, args) -> int:
     try:
         _notifier = NotificationService()
         review_result = run_market_review(
-            _notifier, config=config, send_notification=False,
+            _notifier, config=config, send_notification=True,
             override_region="cn", trigger_source="eod-summary",
             return_structured=True,
         )
@@ -766,7 +766,7 @@ def _run_eod_summary(config, args) -> int:
         logger.warning("自选股列表为空")
         return 1
     pipeline = StockAnalysisPipeline(config)
-    results = pipeline.run(stock_codes=stock_codes, send_notification=False)
+    results = pipeline.run(stock_codes=stock_codes, send_notification=True)
 
     # ③ 持仓快照
     portfolio = {}
@@ -795,56 +795,109 @@ def _run_eod_summary(config, args) -> int:
 
 
 def _format_eod_for_feishu(report: dict) -> str:
-    """将 EOD 报告 JSON 格式化为飞书 Markdown 消息。"""
+    """将 EOD 报告 JSON 格式化为飞书 Markdown 消息（详细版）。"""
     market = report.get("market_summary", {})
     positions = report.get("positions", []) or []
     risk = report.get("risk_summary", {})
-    degraded = report.get("_degraded", False)
 
-    lines = [
-        f"# 📊 盘后总结{' ⚠️ 降级模式' if degraded else ''}",
-        "",
-        f"## 今日大盘",
-        f"> {market.get('one_liner', 'N/A')}",
-    ]
-    for obs in market.get("key_observations", [])[:3]:
-        lines.append(f"- {obs}")
+    lines = ["# 📊 盘后策略报告", ""]
+
+    # ── 大盘摘要 ──
+    lines.append("## 今日大盘")
+    lines.append(f"> {market.get('one_liner', 'N/A')}")
+    if market.get("_raw"):
+        raw_lines = [l.strip("- ").strip() for l in market["_raw"].split("\n") if l.strip().startswith("- ")]
+        for l in raw_lines[:3]:
+            lines.append(f"- {l}")
     lines.append("")
 
-    for p in positions[:20]:
-        name = p.get("name", p.get("code", "?"))
-        code = p.get("code", "")
+    # ── 持仓速览表 ──
+    lines.append("## 持仓速览")
+    lines.append("| 股票 | 评分 | 趋势 | 操作 | 今日 | 浮盈 | 止损距 |")
+    lines.append("|------|:--:|------|------|------|------|:--:|")
+    for p in positions:
+        code = p.get("code", "?").replace(".SH", "").replace(".SZ", "")
+        name = p.get("name", "?")[:8]
+        score = p.get("score", "?")
+        trend = p.get("trend", "?")[:4]
+        advice = p.get("advice", "?")[:4]
+        pnl = p.get("holding", {}).get("pnl_pct")
+        pnl_s = f"{pnl:+.1f}%" if pnl is not None else "-"
+        pct = p.get("pct_chg")
+        pct_s = f"{pct:+.2f}%" if pct is not None else "?"
+        sl_d = p.get("stop_distance_pct")
+        sl_s = f"{sl_d:.1f}%" if sl_d is not None else "-"
+        lines.append(f"| {name}({code}) | {score} | {trend} | {advice} | {pct_s} | {pnl_s} | {sl_s} |")
+    lines.append("")
+
+    # ── 逐只股票详情 ──
+    for p in positions:
+        code = p.get("code", "?").replace(".SH", "").replace(".SZ", "")
+        name = p.get("name", "?")
+        score = p.get("score", "?")
+        trend = p.get("trend", "?")
+        advice = p.get("advice", "?")
+        pct = p.get("pct_chg")
+        close = p.get("close")
+        ma = p.get("ma", {}) or {}
+        vol = p.get("volume", {}) or {}
+        chip = p.get("chip", {}) or {}
         h = p.get("holding", {}) or {}
-        today = p.get("today", {}) or {}
-        tc = p.get("trigger_check", {}) or {}
         st = p.get("strategy", {}) or {}
-        hold_str = ""
+        risk_alerts = p.get("risk_alerts", [])[:2]
+        sl_d = p.get("stop_distance_pct")
+        sl_flag = " 🚨" if sl_d is not None and sl_d <= 0 else ""
+
+        lines.append(f"## {name} ({code}) — {trend} · {score}分 · {advice}{sl_flag}")
+        pct_str = f"{pct:+.2f}%" if pct is not None else "?"
+        close_str = f"{close:.2f}" if close is not None else "?"
+        lines.append(f"**今日**: {close_str} ({pct_str})")
+        # 持仓
         if h.get("quantity"):
             pnl = h.get("pnl_pct")
-            pnl_str = f" 浮盈{pnl:.1f}%" if pnl is not None else ""
-            hold_str = f" | 持仓{h.get('quantity')}股 成本{h.get('avg_cost')}{pnl_str}"
-        stop_str = ""
-        if tc.get("stop_loss_triggered"):
-            stop_str = " 🚨止损触发!"
-        elif tc.get("distance_to_stop_pct") is not None:
-            stop_str = f" 距止损{tc['distance_to_stop_pct']:.1f}%"
+            pnl_str = f"浮盈{pnl:+.1f}%" if pnl is not None else ""
+            lines.append(f"**持仓**: {h['quantity']}股 成本{h['avg_cost']} {pnl_str}")
 
-        lines.append(f"## {name} ({code}){stop_str}")
-        lines.append(f"今日: {today.get('pct_chg', '?')}% 收 {today.get('close', '?')}{hold_str}")
+        # 技术面
+        if ma.get("alignment"):
+            lines.append(f"**均线**: {ma['alignment']}")
+        if vol.get("meaning"):
+            lines.append(f"**量能**: {vol['meaning']}")
+        prof = chip.get("profit_ratio")
+        if prof is not None:
+            lines.append(f"**筹码**: 获利{prof}% | 集中度{chip.get('concentration','?')}")
+        lines.append(f"**资金**: {p.get('capital_verdict', '数据缺失')}")
+
+        # 风险
+        if risk_alerts:
+            lines.append(f"**风险**: {'; '.join(risk_alerts)}")
+
+        # 关键价位
+        supp = p.get("support") or "?"
+        res = p.get("resistance") or "?"
+        sl_line = f"| 🛑 硬止损 {p.get('stop_loss', '?')}" + (f" | 距止损 {sl_d:.1f}%" if sl_d is not None else "")
+        lines.append(f"📍 支撑 {supp} | 压力 {res}")
+        lines.append(sl_line)
         lines.append("")
+
+        # 明日操作
+        lines.append("📋 明日操作:")
         lines.append(f"🟢 {st.get('scenario_a', {}).get('condition', '?')} → {st.get('scenario_a', {}).get('action', '?')}")
         lines.append(f"🟡 {st.get('scenario_b', {}).get('condition', '?')} → {st.get('scenario_b', {}).get('action', '?')}")
         lines.append(f"🔴 {st.get('scenario_c', {}).get('condition', '?')} → {st.get('scenario_c', {}).get('action', '?')}")
-        if st.get("hard_stop"):
-            lines.append(f"🛑 硬止损: {st['hard_stop']}")
         lines.append("")
 
+    # ── 风险摘要 ──
     lines.append("## ⚠️ 风险摘要")
     lines.append(f"整体风险: {risk.get('overall_risk', 'N/A')}")
-    if risk.get("stop_warnings"):
-        lines.append(f"止损预警: {', '.join(risk['stop_warnings'])}")
-    if risk.get("concentration_alert"):
-        lines.append(f"集中度: {risk['concentration_alert']}")
+    triggered = risk.get("stop_triggered", [])
+    warnings = risk.get("stop_warnings", [])
+    if triggered:
+        lines.append(f"🚨 止损触发: {', '.join(triggered)}")
+    if warnings:
+        lines.append(f"⚠ 接近止损: {', '.join(warnings)}")
+    if not triggered and not warnings:
+        lines.append("✅ 无止损触发或接近预警")
 
     return "\n".join(lines)
 
