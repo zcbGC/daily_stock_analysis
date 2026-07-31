@@ -364,8 +364,21 @@ def parse_arguments() -> argparse.Namespace:
 
     parser.add_argument(
         '--mode',
-        choices=['eod-summary'],
-        help='运行模式: eod-summary=盘后总结(收盘后自动复盘+持仓策略生成)'
+        choices=['eod-summary', 'outcome-backfill'],
+        help='运行模式: eod-summary=盘后总结(收盘后自动复盘+持仓策略生成) | outcome-backfill=回填决策信号方向outcome(验证方向准确率)'
+    )
+
+    parser.add_argument(
+        '--no-fetch',
+        action='store_true',
+        help='outcome-backfill 模式: 只用本地日线缓存，不发起网络补拉'
+    )
+
+    parser.add_argument(
+        '--limit',
+        type=int,
+        default=None,
+        help='outcome-backfill 模式: 只回填最近 N 条信号'
     )
 
     parser.add_argument(
@@ -798,6 +811,38 @@ def _run_eod_summary(config, args) -> int:
     notifier_.send(report_text)
 
     logger.info("===== 盘后总结完成 =====")
+    return 0
+
+
+def _run_outcome_backfill(config, args) -> int:
+    """回填决策信号方向 outcome，并输出方向命中率统计。
+
+    --no-fetch  只用本地日线缓存，不发起网络补拉
+    --limit N   只回填最近 N 条信号
+    """
+    from src.storage import DatabaseManager
+    from src.services.signal_outcome_backfill import (
+        SignalOutcomeBackfiller,
+        print_outcome_stats,
+    )
+
+    db_manager = DatabaseManager()
+    fetch = not getattr(args, "no_fetch", False)
+    limit = getattr(args, "limit", None)
+
+    data_manager = None
+    if fetch:
+        from data_provider.base import DataFetcherManager
+        logger.info("outcome-backfill: 启用网络补拉（--no-fetch 可关闭）")
+        data_manager = DataFetcherManager()
+
+    backfiller = SignalOutcomeBackfiller(db_manager, data_manager=data_manager)
+    stats = backfiller.backfill(limit=limit, fetch=fetch)
+    logger.info("outcome-backfill 回填完成: %s", stats)
+    print(f"回填完成: {stats}")
+    print("方向命中率统计:")
+    for k, v in print_outcome_stats(db_manager).items():
+        print(f"  {k}: {v}")
     return 0
 
 
@@ -1693,6 +1738,8 @@ def main() -> int:
         # 模式: 盘后总结
         if getattr(args, 'mode', None) == 'eod-summary':
             return _run_eod_summary(config, args)
+        if getattr(args, 'mode', None) == 'outcome-backfill':
+            return _run_outcome_backfill(config, args)
 
         # 模式1: 仅大盘复盘
         if args.market_review:

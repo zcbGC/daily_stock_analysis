@@ -432,6 +432,9 @@ class AkshareFundamentalAdapter:
                 return None
             import requests as _requests
             stock_code_pure = str(stock_code).replace(".SH", "").replace(".SZ", "").replace(".BJ", "")
+            # 北交所（4/8 开头）雪球资金流不可用，跳过避免发出错误市场前缀请求
+            if stock_code_pure.startswith(("4", "8")):
+                return None
             market = "SH" if stock_code_pure.startswith(("6", "5", "9")) else "SZ"
             symbol = f"{market}{stock_code_pure}"
             resp = _requests.get(
@@ -630,8 +633,11 @@ class AkshareFundamentalAdapter:
                 result["status"] = "ok"
                 result["text"] = "无近期限售解禁"
                 return result
-            row = matches.sort_values(by=code_col).iloc[0] if len(matches) > 1 else matches.iloc[0]
+            # 按解禁日期升序取"最近一次解禁"（date_col 提前查找用于排序，避免按代码序取错）
             date_col = next((c for c in matches.columns if "日期" in str(c)), None)
+            if date_col is not None and len(matches) > 1:
+                matches = matches.sort_values(by=date_col)
+            row = matches.iloc[0]
             shares_col = next((c for c in matches.columns if "数量" in str(c) or "股数" in str(c)), None)
             ratio_col = next((c for c in matches.columns if "比例" in str(c)), None)
             date_val = str(row[date_col])[:10] if date_col is not None and row.get(date_col) is not None else "未知"
