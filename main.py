@@ -742,8 +742,17 @@ def _run_eod_summary(config, args) -> int:
     cache = MarketCacheService(db_manager)
     market_text = ""
     try:
-        review_result = run_market_review(config, region="cn", trigger_source="eod-summary")
-        market_text = review_result.get("report", "") if isinstance(review_result, dict) else str(review_result or "")
+        from src.notification import NotificationService
+        _notifier = NotificationService(config)
+        review_result = run_market_review(
+            _notifier, config=config, send_notification=False,
+            override_region="cn", trigger_source="eod-summary",
+            return_structured=True,
+        )
+        if isinstance(review_result, dict):
+            market_text = review_result.get("report", "") or str(review_result)
+        elif review_result:
+            market_text = str(review_result)
         cache.archive_today()
     except Exception as e:
         logger.warning("大盘复盘失败: %s，尝试用缓存兜底", e)
@@ -756,7 +765,7 @@ def _run_eod_summary(config, args) -> int:
     if not stock_codes:
         logger.warning("自选股列表为空")
         return 1
-    pipeline = StockAnalysisPipeline(config, db_manager=db_manager)
+    pipeline = StockAnalysisPipeline(config)
     results = pipeline.run(stock_codes=stock_codes, send_notification=False)
 
     # ③ 持仓快照
@@ -778,9 +787,9 @@ def _run_eod_summary(config, args) -> int:
 
     # ⑤ 飞书推送
     from src.notification import NotificationService
-    notifier = NotificationService(config)
+    notifier_ = NotificationService(config)
     report_text = _format_eod_for_feishu(report)
-    notifier.send(report_text)
+    notifier_.send(report_text)
 
     logger.info("===== 盘后总结完成 =====")
     return 0
