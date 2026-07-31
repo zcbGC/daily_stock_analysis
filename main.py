@@ -739,7 +739,15 @@ def _run_eod_summary(config, args) -> int:
 
     logger.info("===== 盘后总结开始 =====")
 
-    # ① 大盘复盘 + 归档
+    # 先创建 pipeline 以获得 analyzer 和 search_service
+    config.refresh_stock_list()
+    stock_codes = config.stock_list
+    if not stock_codes:
+        logger.warning("自选股列表为空")
+        return 1
+    pipeline = StockAnalysisPipeline(config)
+
+    # ① 大盘复盘 — 传入 analyzer 获得 AI 生成的大盘报告
     cache = MarketCacheService(db_manager)
     market_text = ""
     try:
@@ -748,6 +756,8 @@ def _run_eod_summary(config, args) -> int:
             _notifier, config=config, send_notification=True,
             override_region="cn", trigger_source="eod-summary",
             return_structured=True,
+            analyzer=pipeline.analyzer,
+            search_service=pipeline.search_service,
         )
         if isinstance(review_result, dict):
             market_text = review_result.get("report", "") or str(review_result)
@@ -760,12 +770,6 @@ def _run_eod_summary(config, args) -> int:
         market_text = f"(大盘复盘失败，使用最近缓存)\n{latest.get('review_text', '') if latest else ''}"
 
     # ② 全量个股分析
-    config.refresh_stock_list()
-    stock_codes = config.stock_list
-    if not stock_codes:
-        logger.warning("自选股列表为空")
-        return 1
-    pipeline = StockAnalysisPipeline(config)
     results = pipeline.run(stock_codes=stock_codes, send_notification=True)
 
     # ③ 持仓快照
