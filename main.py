@@ -729,6 +729,7 @@ def _run_eod_summary(config, args) -> int:
     from src.core.pipeline import StockAnalysisPipeline
     from src.services.market_cache import MarketCacheService
     from src.services.eod_service import EODService
+    from src.notification import NotificationService
 
     db_manager = DatabaseManager()
     phase = infer_market_phase("cn")
@@ -742,8 +743,7 @@ def _run_eod_summary(config, args) -> int:
     cache = MarketCacheService(db_manager)
     market_text = ""
     try:
-        from src.notification import NotificationService
-        _notifier = NotificationService(config)
+        _notifier = NotificationService()
         review_result = run_market_review(
             _notifier, config=config, send_notification=False,
             override_region="cn", trigger_source="eod-summary",
@@ -786,8 +786,7 @@ def _run_eod_summary(config, args) -> int:
     report = eod.generate_summary(results, market_text, portfolio, config)
 
     # ⑤ 飞书推送
-    from src.notification import NotificationService
-    notifier_ = NotificationService(config)
+    notifier_ = NotificationService()
     report_text = _format_eod_for_feishu(report)
     notifier_.send(report_text)
 
