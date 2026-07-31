@@ -778,7 +778,7 @@ def _run_eod_summary(config, args, db_manager) -> int:
     from src.notification import NotificationService
     notifier = NotificationService(config)
     report_text = _format_eod_for_feishu(report)
-    notifier.send_custom_message(report_text)
+    notifier.send(report_text)
 
     logger.info("===== 盘后总结完成 =====")
     return 0
