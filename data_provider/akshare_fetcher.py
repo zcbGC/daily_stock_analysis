@@ -897,6 +897,7 @@ class AkshareFetcher(BaseFetcher):
         df = df.copy()
         
         # 列名映射（Akshare 中文列名 -> 标准英文列名）
+        # 'turnover'/'换手率' 保留供筹码本地计算使用（不在 STANDARD_COLUMNS 内，避免影响其他 fetcher）
         column_mapping = {
             '日期': 'date',
             '开盘': 'open',
@@ -906,19 +907,23 @@ class AkshareFetcher(BaseFetcher):
             '成交量': 'volume',
             '成交额': 'amount',
             '涨跌幅': 'pct_chg',
+            '换手率': 'turnover',
+            'turnover': 'turnover',
         }
-        
+
         # 重命名列
         df = df.rename(columns=column_mapping)
-        
+
         # 添加股票代码列
         df['code'] = stock_code
-        
+
         # 只保留需要的列
         keep_cols = ['code'] + STANDARD_COLUMNS
+        if 'turnover' in df.columns:
+            keep_cols = keep_cols + ['turnover']
         existing_cols = [col for col in keep_cols if col in df.columns]
         df = df[existing_cols]
-        
+
         return df
     
     def get_realtime_quote(self, stock_code: str, source: str = "em") -> Optional[UnifiedRealtimeQuote]:

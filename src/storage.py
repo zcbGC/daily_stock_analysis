@@ -66,6 +66,17 @@ T = TypeVar("T")
 CURRENT_SCHEMA_VERSION = "2026-06-05-create-all-baseline"
 INTELLIGENCE_ITEM_NULL_SCOPE_VALUE = "__dsa_null_scope__"
 
+# 命令式 schema 演进补丁的集中注册表（保持现有 _ensure_* 方法不变，仅收敛执行顺序）。
+# 新增迁移时在此追加方法名即可；顺序即执行顺序，注意保持依赖关系。
+_ENSURE_MIGRATIONS = (
+    "_ensure_llm_usage_telemetry_columns",
+    "_ensure_stock_daily_adjust_column",
+    "_ensure_decision_signal_profile_schema",
+    "_ensure_intelligence_item_scope_values",
+    "_ensure_schema_migration_record",
+    "_ensure_intelligence_items_unique_index",
+)
+
 # SQLAlchemy ORM 基类
 Base = declarative_base()
 
@@ -134,7 +145,10 @@ class StockDaily(Base):
     
     # 数据来源
     data_source = Column(String(50))  # 记录数据来源（如 AkshareFetcher）
-    
+
+    # 复权标记（qfq=前复权；默认 qfq 与主要数据源一致）
+    adjust = Column(String(8), default='qfq')
+
     # 更新时间
     created_at = Column(DateTime, default=datetime.now)
     updated_at = Column(DateTime, default=datetime.now, onupdate=datetime.now)
@@ -1287,11 +1301,7 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
 
             # 创建所有表
             Base.metadata.create_all(self._engine)
-            self._ensure_llm_usage_telemetry_columns()
-            self._ensure_decision_signal_profile_schema()
-            self._ensure_intelligence_item_scope_values()
-            self._ensure_schema_migration_record()
-            self._ensure_intelligence_items_unique_index()
+            self._ensure_migrations()
 
             self._initialized = True
             logger.info(f"数据库初始化完成: {db_url}")
@@ -1309,6 +1319,15 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
             self._SessionLocal = None
             self.__class__._instance = None
             raise
+
+    def _ensure_migrations(self) -> None:
+        """按注册表顺序执行命令式 schema 演进补丁（收敛散落的 _ensure_* 调用）。"""
+        for method_name in _ENSURE_MIGRATIONS:
+            method = getattr(self, method_name, None)
+            if method is None:
+                logger.warning("[migrations] 注册表引用了缺失的迁移方法: %s", method_name)
+                continue
+            method()
 
     def _ensure_schema_migration_record(self) -> None:
         session = self._SessionLocal()
@@ -1670,6 +1689,47 @@ class DatabaseManager(metaclass=_DatabaseManagerMeta):
                             time.sleep(delay)
                         continue
                     raise
+
+    def _ensure_stock_daily_adjust_column(self) -> None:
+        """Add nullable adjust column (复权标记) to existing stock_daily tables."""
+        if not self._is_sqlite_engine:
+            return
+        try:
+            existing = {
+                column["name"]
+                for column in inspect(self._engine).get_columns(StockDaily.__tablename__)
+            }
+        except Exception as exc:
+            logger.warning(
+                "[stock_daily] failed to inspect columns; skipping adjust backfill: %s",
+                exc,
+            )
+            return
+        if "adjust" in existing:
+            return
+        for attempt in range(self._sqlite_write_retry_max + 1):
+            try:
+                with self._engine.begin() as connection:
+                    connection.exec_driver_sql(
+                        f"ALTER TABLE {StockDaily.__tablename__} "
+                        "ADD COLUMN adjust VARCHAR(8) DEFAULT 'qfq'"
+                    )
+                break
+            except OperationalError as exc:
+                if self._is_sqlite_duplicate_column_error(exc, "adjust"):
+                    break
+                if self._is_sqlite_locked_error(exc) and attempt < self._sqlite_write_retry_max:
+                    delay = self._sqlite_write_retry_base_delay * (2 ** attempt)
+                    logger.warning(
+                        "[stock_daily] adjust column backfill locked, retrying: %s (%s/%s, %.2fs)",
+                        attempt + 1,
+                        self._sqlite_write_retry_max,
+                        delay,
+                    )
+                    if delay > 0:
+                        time.sleep(delay)
+                    continue
+                raise
 
     def _ensure_intelligence_item_scope_values(self) -> None:
         """Backfill nullable intelligence item scopes so SQLite unique keys work."""

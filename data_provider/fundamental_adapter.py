@@ -62,6 +62,27 @@ def _safe_float(value: Any) -> Optional[float]:
         return None
 
 
+def _sane_number(value: Any, kind: str = "amount") -> Optional[float]:
+    """基本面数值合理性过滤。异常/脏数据（如 ETF 归母净利润"17 元"）返回 None。
+
+    kind:
+      amount — 金额类（元或万元口径）：低于 100 判脏（拦截"归母净利润 17 元"类单位错乱），防超大溢出
+      ratio  — 同比/增长率（%）：限制在 ±1000，防脏数据（如 9999%）
+      roe    — 净资产收益率（%）：合理区间 ±100
+      margin — 毛利率（%）：合理区间 ±100
+    """
+    v = _safe_float(value)
+    if v is None:
+        return None
+    if kind == "amount":
+        return v if 1e2 <= abs(v) <= 1e16 else None
+    if kind == "ratio":
+        return v if -1000 <= v <= 1000 else None
+    if kind in ("roe", "margin"):
+        return v if -100 <= v <= 100 else None
+    return v
+
+
 def _safe_str(value: Any) -> str:
     if value is None:
         return ""
@@ -312,15 +333,15 @@ class AkshareFundamentalAdapter:
         if fin_df is not None:
             row = _extract_latest_row(fin_df, stock_code)
             if row is not None:
-                revenue_yoy = _safe_float(_pick_by_keywords(row, ["营业收入同比", "营收同比", "收入同比", "同比增长"]))
-                profit_yoy = _safe_float(_pick_by_keywords(row, ["净利润同比", "净利同比", "归母净利润同比"]))
-                roe = _safe_float(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]))
-                gross_margin = _safe_float(_pick_by_keywords(row, ["毛利率"]))
+                revenue_yoy = _sane_number(_pick_by_keywords(row, ["营业收入同比", "营收同比", "收入同比", "同比增长"]), "ratio")
+                profit_yoy = _sane_number(_pick_by_keywords(row, ["净利润同比", "净利同比", "归母净利润同比"]), "ratio")
+                roe = _sane_number(_pick_by_keywords(row, ["净资产收益率", "ROE", "净资产收益"]), "roe")
+                gross_margin = _sane_number(_pick_by_keywords(row, ["毛利率"]), "margin")
                 report_date = _normalize_report_date(_pick_by_keywords(row, _DIVIDEND_KEYWORD_MAP["report_date"]))
-                revenue = _safe_float(_pick_by_keywords(row, ["营业总收入", "营业收入", "营收"]))
-                net_profit_parent = _safe_float(_pick_by_keywords(row, ["归母净利润", "母公司股东净利润", "净利润"]))
-                operating_cash_flow = _safe_float(
-                    _pick_by_keywords(row, ["经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"])
+                revenue = _sane_number(_pick_by_keywords(row, ["营业总收入", "营业收入", "营收"]), "amount")
+                net_profit_parent = _sane_number(_pick_by_keywords(row, ["归母净利润", "母公司股东净利润", "净利润"]), "amount")
+                operating_cash_flow = _sane_number(
+                    _pick_by_keywords(row, ["经营活动产生的现金流量净额", "经营现金流", "经营活动现金流"]), "amount"
                 )
                 result["growth"] = {
                     "revenue_yoy": revenue_yoy,
