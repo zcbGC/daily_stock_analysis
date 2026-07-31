@@ -739,7 +739,7 @@ def _run_eod_summary(config, args) -> int:
 
     logger.info("===== 盘后总结开始 =====")
 
-    # 先创建 pipeline 以获得 analyzer 和 search_service
+    # 先创建 pipeline 获得个股分析能力
     config.refresh_stock_list()
     stock_codes = config.stock_list
     if not stock_codes:
@@ -747,18 +747,21 @@ def _run_eod_summary(config, args) -> int:
         return 1
     pipeline = StockAnalysisPipeline(config)
 
-    # ① 大盘复盘 — 传入 analyzer 获得 AI 生成的大盘报告
+    # ① 大盘复盘 — 用独立 analyzer（和 pipeline 共享 config、独立初始化 router）
     cache = MarketCacheService(db_manager)
     market_text = ""
     try:
         _notifier = NotificationService()
+        from src.analyzer import GeminiAnalyzer
+        mk_analyzer = GeminiAnalyzer(config=config)
         review_result = run_market_review(
             _notifier, config=config, send_notification=True,
             override_region="cn", trigger_source="eod-summary",
             return_structured=True,
-            analyzer=pipeline.analyzer,
+            analyzer=mk_analyzer,
             search_service=pipeline.search_service,
         )
+
         if isinstance(review_result, dict):
             market_text = review_result.get("report", "") or str(review_result)
         elif review_result:
@@ -769,7 +772,7 @@ def _run_eod_summary(config, args) -> int:
         latest = cache.load_latest()
         market_text = f"(大盘复盘失败，使用最近缓存)\n{latest.get('review_text', '') if latest else ''}"
 
-    # ② 全量个股分析
+    # ② 全量个股分析（大盘上下文来自 DailyMarketContextService，不依赖 run_market_review）
     results = pipeline.run(stock_codes=stock_codes, send_notification=True)
 
     # ③ 持仓快照
