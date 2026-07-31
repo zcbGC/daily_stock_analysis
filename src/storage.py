@@ -35,6 +35,7 @@ from sqlalchemy import (
     Index,
     UniqueConstraint,
     Text,
+    JSON,
     text,
     select,
     and_,
@@ -1173,6 +1174,37 @@ class SkillOpinionSampleRecord(Base):
             'created_at',
         ),
     )
+
+
+class MarketArchive(Base):
+    """大盘数据快照（盘中缓存 + 盘后永久归档）。"""
+
+    __tablename__ = "market_archive"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)
+    region = Column(String(8), default="cn")
+    phase = Column(String(20))
+    archived = Column(Boolean, default=False)
+    data = Column(JSON)
+    review_text = Column(Text)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
+
+    __table_args__ = (
+        Index("ix_market_archive_date_region", "date", "region"),
+    )
+
+
+class EODSummary(Base):
+    """盘后综合报告（持仓感知的策略输出）。"""
+
+    __tablename__ = "eod_summary"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(String(10), nullable=False, index=True)
+    next_trading_day = Column(String(10))
+    data = Column(JSON)
+    created_at = Column(DateTime, default=utc_naive_now, index=True)
 
 
 class _DatabaseManagerMeta(type):
