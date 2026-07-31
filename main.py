@@ -721,14 +721,16 @@ def _run_auto_backtest(config: Config) -> None:
         logger.warning(f"自动回测失败（已忽略）: {exc}")
 
 
-def _run_eod_summary(config, args, db_manager) -> int:
+def _run_eod_summary(config, args) -> int:
     """盘后总结：复盘大盘 → 分析自选股 → 生成持仓感知策略报告 → 飞书推送。"""
+    from src.storage import DatabaseManager
     from src.core.trading_calendar import infer_market_phase
     from src.core.market_review import run_market_review
     from src.core.pipeline import StockAnalysisPipeline
     from src.services.market_cache import MarketCacheService
     from src.services.eod_service import EODService
 
+    db_manager = DatabaseManager()
     phase = infer_market_phase("cn")
     if phase not in ("postmarket", "non_trading") and not getattr(args, 'force_run', False):
         logger.warning("当前市场阶段: %s，盘后总结应在收盘后运行。加 --force-run 强制运行。", phase)
@@ -1621,7 +1623,7 @@ def main() -> int:
 
         # 模式: 盘后总结
         if getattr(args, 'mode', None) == 'eod-summary':
-            return _run_eod_summary(config, args, db_manager)
+            return _run_eod_summary(config, args)
 
         # 模式1: 仅大盘复盘
         if args.market_review:
