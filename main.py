@@ -363,6 +363,12 @@ def parse_arguments() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        '--mode',
+        choices=['eod-summary'],
+        help='运行模式: eod-summary=盘后总结(收盘后自动复盘+持仓策略生成)'
+    )
+
+    parser.add_argument(
         '--force-run',
         action='store_true',
         help='跳过交易日检查，强制执行全量分析（Issue #373）'
@@ -713,6 +719,124 @@ def _run_auto_backtest(config: Config) -> None:
         )
     except Exception as exc:
         logger.warning(f"自动回测失败（已忽略）: {exc}")
+
+
+def _run_eod_summary(config, args, db_manager) -> int:
+    """盘后总结：复盘大盘 → 分析自选股 → 生成持仓感知策略报告 → 飞书推送。"""
+    from src.core.trading_calendar import infer_market_phase
+    from src.core.market_review import run_market_review
+    from src.core.pipeline import StockAnalysisPipeline
+    from src.services.market_cache import MarketCacheService
+    from src.services.eod_service import EODService
+
+    phase = infer_market_phase("cn")
+    if phase not in ("postmarket", "non_trading") and not getattr(args, 'force_run', False):
+        logger.warning("当前市场阶段: %s，盘后总结应在收盘后运行。加 --force-run 强制运行。", phase)
+        return 1
+
+    logger.info("===== 盘后总结开始 =====")
+
+    # ① 大盘复盘 + 归档
+    cache = MarketCacheService(db_manager)
+    market_text = ""
+    try:
+        review_result = run_market_review(config, region="cn", trigger_source="eod-summary")
+        market_text = review_result.get("report", "") if isinstance(review_result, dict) else str(review_result or "")
+        cache.archive_today()
+    except Exception as e:
+        logger.warning("大盘复盘失败: %s，尝试用缓存兜底", e)
+        latest = cache.load_latest()
+        market_text = f"(大盘复盘失败，使用最近缓存)\n{latest.get('review_text', '') if latest else ''}"
+
+    # ② 全量个股分析
+    config.refresh_stock_list()
+    stock_codes = config.stock_list
+    if not stock_codes:
+        logger.warning("自选股列表为空")
+        return 1
+    pipeline = StockAnalysisPipeline(config, db_manager=db_manager)
+    results = pipeline.run(stock_codes=stock_codes, send_notification=False)
+
+    # ③ 持仓快照
+    portfolio = {}
+    try:
+        from src.storage import PortfolioPosition
+        with db_manager.session_scope() as session:
+            positions = session.query(PortfolioPosition).filter(PortfolioPosition.quantity > 0).all()
+            portfolio = {
+                p.symbol: {"quantity": p.quantity, "avg_cost": p.avg_cost, "market_value": p.market_value_base}
+                for p in positions
+            }
+    except Exception as e:
+        logger.warning("持仓快照获取失败: %s", e)
+
+    # ④ 生成综合报告
+    eod = EODService(db_manager)
+    report = eod.generate_summary(results, market_text, portfolio, config)
+
+    # ⑤ 飞书推送
+    from src.notification import NotificationService
+    notifier = NotificationService(config)
+    report_text = _format_eod_for_feishu(report)
+    notifier.send_custom_message(report_text)
+
+    logger.info("===== 盘后总结完成 =====")
+    return 0
+
+
+def _format_eod_for_feishu(report: dict) -> str:
+    """将 EOD 报告 JSON 格式化为飞书 Markdown 消息。"""
+    market = report.get("market_summary", {})
+    positions = report.get("positions", []) or []
+    risk = report.get("risk_summary", {})
+    degraded = report.get("_degraded", False)
+
+    lines = [
+        f"# 📊 盘后总结{' ⚠️ 降级模式' if degraded else ''}",
+        "",
+        f"## 今日大盘",
+        f"> {market.get('one_liner', 'N/A')}",
+    ]
+    for obs in market.get("key_observations", [])[:3]:
+        lines.append(f"- {obs}")
+    lines.append("")
+
+    for p in positions[:20]:
+        name = p.get("name", p.get("code", "?"))
+        code = p.get("code", "")
+        h = p.get("holding", {}) or {}
+        today = p.get("today", {}) or {}
+        tc = p.get("trigger_check", {}) or {}
+        st = p.get("strategy", {}) or {}
+        hold_str = ""
+        if h.get("quantity"):
+            pnl = h.get("pnl_pct")
+            pnl_str = f" 浮盈{pnl:.1f}%" if pnl is not None else ""
+            hold_str = f" | 持仓{h.get('quantity')}股 成本{h.get('avg_cost')}{pnl_str}"
+        stop_str = ""
+        if tc.get("stop_loss_triggered"):
+            stop_str = " 🚨止损触发!"
+        elif tc.get("distance_to_stop_pct") is not None:
+            stop_str = f" 距止损{tc['distance_to_stop_pct']:.1f}%"
+
+        lines.append(f"## {name} ({code}){stop_str}")
+        lines.append(f"今日: {today.get('pct_chg', '?')}% 收 {today.get('close', '?')}{hold_str}")
+        lines.append("")
+        lines.append(f"🟢 {st.get('scenario_a', {}).get('condition', '?')} → {st.get('scenario_a', {}).get('action', '?')}")
+        lines.append(f"🟡 {st.get('scenario_b', {}).get('condition', '?')} → {st.get('scenario_b', {}).get('action', '?')}")
+        lines.append(f"🔴 {st.get('scenario_c', {}).get('condition', '?')} → {st.get('scenario_c', {}).get('action', '?')}")
+        if st.get("hard_stop"):
+            lines.append(f"🛑 硬止损: {st['hard_stop']}")
+        lines.append("")
+
+    lines.append("## ⚠️ 风险摘要")
+    lines.append(f"整体风险: {risk.get('overall_risk', 'N/A')}")
+    if risk.get("stop_warnings"):
+        lines.append(f"止损预警: {', '.join(risk['stop_warnings'])}")
+    if risk.get("concentration_alert"):
+        lines.append(f"集中度: {risk['concentration_alert']}")
+
+    return "\n".join(lines)
 
 
 def run_full_analysis(
@@ -1494,6 +1618,10 @@ def main() -> int:
                 f"completed={stats.get('completed')} insufficient={stats.get('insufficient')} errors={stats.get('errors')}"
             )
             return 0
+
+        # 模式: 盘后总结
+        if getattr(args, 'mode', None) == 'eod-summary':
+            return _run_eod_summary(config, args, db_manager)
 
         # 模式1: 仅大盘复盘
         if args.market_review:

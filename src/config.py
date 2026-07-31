@@ -855,7 +855,7 @@ class Config:
     agent_intel_agent_timeout_s: float = 0
     agent_risk_agent_timeout_s: float = 0
     agent_decision_agent_timeout_s: float = 0
-    agent_portfolio_agent_timeout_s: float = 0
+    agent_portfolio_agent_timeout_s: float = 60
     agent_skill_agent_timeout_s: float = 0
     agent_skill_concurrency: int = 3
     agent_risk_override: bool = True  # Allow risk agent to veto buy signals
