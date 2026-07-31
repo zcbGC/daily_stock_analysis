@@ -75,7 +75,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 # Valid orchestrator modes (ordered by cost/depth)
-VALID_MODES = ("quick", "standard", "full", "specialist")
+VALID_MODES = ("quick", "standard", "full", "specialist", "qa")
 NON_CRITICAL_BASE_STAGES = frozenset({"intel", "risk"})
 
 
@@ -783,7 +783,10 @@ class AgentOrchestrator:
         risk = self._prepare_agent(RiskAgent(**common_kwargs))
         decision = self._prepare_agent(DecisionAgent(**common_kwargs))
 
-        if self.mode == "quick":
+        if self.mode == "qa":
+            # Q&A mode: single lightweight agent with all tools, no pipeline
+            return [technical]
+        elif self.mode == "quick":
             return [technical, decision]
         elif self.mode == "standard":
             return [technical, intel, decision]

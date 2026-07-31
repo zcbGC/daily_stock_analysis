@@ -728,3 +728,110 @@ get_capital_flow_tool = ToolDefinition(
 
 
 ALL_DATA_TOOLS.append(get_capital_flow_tool)
+
+
+# ── 盘后总结 + 持仓感知工具 ──────────────────────────────────────
+
+_EOD_HISTORY_POLICY = ToolPolicy.declared(
+    read_only=True, side_effects=["db_read"],
+    permissions=["analysis:read", "portfolio:read"], scope_dimensions=[],
+)
+
+def _handle_query_eod_summary(date: str = None) -> dict:
+    from src.services.eod_service import EODService
+    from src.storage import DatabaseManager
+    db = DatabaseManager(); eod = EODService(db)
+    result = eod.load_by_date(date) if date else eod.load_latest()
+    return result if result else {"error": "未找到盘后策略报告"}
+
+query_eod_summary_tool = ToolDefinition(
+    name="query_eod_summary",
+    description="查询指定日期的盘后策略报告(scenario_a/b/c+风险摘要)",
+    parameters=[ToolParameter(name="date", type="string", description="日期 YYYY-MM-DD", required=False)],
+    handler=_handle_query_eod_summary, category="history", policy=_EOD_HISTORY_POLICY,
+)
+
+def _handle_query_analysis_history(stock_code: str, days: int = 7) -> dict:
+    from src.storage import DatabaseManager, AnalysisHistory
+    from datetime import datetime, timedelta
+    db = DatabaseManager()
+    since = (datetime.now() - timedelta(days=days)).strftime("%Y-%m-%d")
+    with db.session_scope() as session:
+        rows = (session.query(AnalysisHistory)
+                .filter(AnalysisHistory.code == stock_code, AnalysisHistory.created_at >= since)
+                .order_by(AnalysisHistory.created_at.desc()).limit(days * 2).all())
+        return {"stock_code": stock_code, "count": len(rows), "items": [
+            {"date": str(r.created_at)[:10] if r.created_at else "?", "sentiment_score": r.sentiment_score,
+             "operation_advice": r.operation_advice, "trend_prediction": r.trend_prediction,
+             "analysis_summary": (r.analysis_summary or "")[:200]} for r in rows]}
+
+query_analysis_history_tool = ToolDefinition(
+    name="query_analysis_history",
+    description="按股票+日期查历史分析(sentiment/trend/summary)",
+    parameters=[ToolParameter(name="stock_code", type="string", description="股票代码", required=True),
+                ToolParameter(name="days", type="integer", description="回溯天数默认7", required=False, default=7)],
+    handler=_handle_query_analysis_history, category="history", policy=_EOD_HISTORY_POLICY,
+)
+
+def _handle_query_market_archive(date: str = None) -> dict:
+    from src.services.market_cache import MarketCacheService
+    from src.storage import DatabaseManager
+    db = DatabaseManager(); cache = MarketCacheService(db)
+    result = cache.load_by_date(date) if date else cache.load_latest()
+    return result if result else {"error": "未找到大盘快照"}
+
+query_market_archive_tool = ToolDefinition(
+    name="query_market_archive",
+    description="查询指定日期的大盘快照(涨跌分布/板块排行/北向资金)",
+    parameters=[ToolParameter(name="date", type="string", description="日期 YYYY-MM-DD", required=False)],
+    handler=_handle_query_market_archive, category="history", policy=_EOD_HISTORY_POLICY,
+)
+
+def _handle_get_portfolio_stop_check() -> dict:
+    from src.storage import DatabaseManager, PortfolioPosition, DecisionSignalRecord
+    from sqlalchemy import and_
+    db = DatabaseManager(); warnings, triggered = [], []
+    with db.session_scope() as session:
+        for p in session.query(PortfolioPosition).filter(PortfolioPosition.quantity > 0).all():
+            sig = (session.query(DecisionSignalRecord)
+                   .filter(and_(DecisionSignalRecord.code == p.symbol, DecisionSignalRecord.stop_loss.isnot(None)))
+                   .order_by(DecisionSignalRecord.created_at.desc()).first())
+            sp = float(sig.stop_loss) if sig and sig.stop_loss else None
+            cp = float(p.last_price) if p and p.last_price else None
+            if sp and cp:
+                d = round((cp - sp) / sp * 100, 1)
+                entry = {"symbol": p.symbol, "stop_price": sp, "current": cp}
+                if d <= 0: triggered.append({**entry, "pnl": float(p.unrealized_pnl_base or 0)})
+                elif d <= 10: warnings.append({**entry, "distance_pct": d})
+    return {"warnings": warnings, "triggered": triggered}
+
+get_portfolio_stop_check_tool = ToolDefinition(
+    name="get_portfolio_stop_check",
+    description="列出持仓中接近(distance_pct<=10%)或已触发止损的股票",
+    parameters=[], handler=_handle_get_portfolio_stop_check,
+    category="portfolio", policy=_EOD_HISTORY_POLICY,
+)
+
+def _handle_get_holding_summary(stock_code: str = None) -> dict:
+    from src.storage import DatabaseManager, PortfolioPosition
+    db = DatabaseManager()
+    with db.session_scope() as session:
+        q = session.query(PortfolioPosition).filter(PortfolioPosition.quantity > 0)
+        if stock_code: q = q.filter(PortfolioPosition.symbol == stock_code)
+        items = [{"symbol": p.symbol, "market": p.market, "quantity": p.quantity,
+                  "avg_cost": p.avg_cost, "last_price": p.last_price,
+                  "market_value": p.market_value_base, "pnl": float(p.unrealized_pnl_base or 0)}
+                 for p in q.all()]
+    return {"count": len(items), "total_value": sum(i["market_value"] or 0 for i in items), "holdings": items}
+
+get_holding_summary_tool = ToolDefinition(
+    name="get_holding_summary",
+    description="查询持仓详情(数量/成本/浮盈/市值)，不传stock_code返回全部",
+    parameters=[ToolParameter(name="stock_code", type="string", description="股票代码可选", required=False)],
+    handler=_handle_get_holding_summary, category="portfolio", policy=_EOD_HISTORY_POLICY,
+)
+
+ALL_DATA_TOOLS.extend([
+    query_eod_summary_tool, query_analysis_history_tool, query_market_archive_tool,
+    get_portfolio_stop_check_tool, get_holding_summary_tool,
+])
