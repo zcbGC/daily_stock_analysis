@@ -12,6 +12,7 @@ logger = logging.getLogger(__name__)
 _CN_TZ = timezone(timedelta(hours=8))
 
 EOD_PROMPT = """你是一位 A 股盘后复盘教练。基于今日的数据，生成一份"盘后总结 + 下个开盘日策略"报告。
+**必须仅输出 JSON，不要任何文字说明。**
 
 ## 输入数据
 
@@ -149,45 +150,85 @@ class EODService:
 
     def _parse_response(self, raw: str, stock_results: List[Any]) -> Dict[str, Any]:
         """解析 LLM 输出为结构化报告。"""
-        # 提取 JSON
-        text = raw.strip()
-        if "```" in text:
-            import re
-            m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
-            if m:
-                text = m.group(1)
-        try:
-            return json.loads(text)
-        except json.JSONDecodeError:
-            logger.warning("EOD LLM 返回非 JSON，使用降级格式化输出")
+        text = (raw or "").strip()
+        if not text:
             return self._degraded_report(stock_results)
+        # 尝试多种 JSON 提取方式
+        import re
+        candidates = []
+        # 1. ```json ... ``` 代码块
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.S)
+        if m: candidates.append(m.group(1))
+        # 2. 裸 JSON（第一个 { 到最后一个 }）
+        start = text.find("{")
+        end = text.rfind("}")
+        if start >= 0 and end > start:
+            candidates.append(text[start:end+1])
+        # 3. 逐条尝试解析
+        for candidate in candidates:
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
+        # 4. 全部失败 → 降级
+        logger.warning("EOD LLM 返回非 JSON (len=%d, preview=%.200s)，降级", len(text), text)
+        return self._degraded_report(stock_results)
 
     def _degraded_report(self, stock_results: List[Any]) -> Dict[str, Any]:
-        """LLM 失败时的降级报告 — 纯数据格式化，不含 AI 推理。"""
+        """LLM 失败时的降级报告 — 从已有 AnalysisResult 提取关键数据。"""
         positions = []
         for r in (stock_results or []):
+            code = getattr(r, "code", "")
+            name = getattr(r, "name", "")
             dash = getattr(r, "dashboard", {}) or {}
             battle = dash.get("battle_plan", {}) or {}
             sniper = battle.get("sniper_points", {}) or {}
+            core = dash.get("core_conclusion", {}) or {}
+            price_pos = (dash.get("data_perspective", {}) or {}).get("price_position", {}) or {}
+            # 从 AnalysisResult 和市场快照提取实际数据
+            close = getattr(r, "current_price", None)
+            pct_chg = getattr(r, "change_pct", None)
+            if close is None:
+                ms = getattr(r, "market_snapshot", {}) or {}
+                close = ms.get("price")
+                pct_chg_obj = ms.get("change_pct")
+                if pct_chg_obj is not None:
+                    pct_chg = float(pct_chg_obj) if not isinstance(pct_chg_obj, (int, float)) else pct_chg_obj
+            # 清洗 sniper 值
+            def _clean(v):
+                if v is None: return None
+                if isinstance(v, (int, float)): return str(v)
+                v = str(v)
+                for prefix in ['理想买入点：','次优买入点：','止损位：','目标位：',
+                               '理想买入点:','次优买入点:','止损位:','目标位:',
+                               '理想入场位：','理想买入点：','止损位：',
+                               'Ideal Entry:','Stop Loss:','Target:']:
+                    if v.startswith(prefix): return v[len(prefix):]
+                return v
+            ideal = _clean(sniper.get("ideal_buy")) or _clean(sniper.get("secondary_buy")) or "等待回踩"
+            stop = _clean(sniper.get("stop_loss")) or "未设置"
+            support = price_pos.get("support_level")
+            resistance = price_pos.get("resistance_level")
+            supp = support or "?"
+            res = resistance or "?"
             positions.append({
-                "code": getattr(r, "code", ""),
-                "name": getattr(r, "name", ""),
+                "code": code, "name": name,
                 "holding": {"quantity": None, "avg_cost": None, "pnl_pct": None},
-                "today": {"pct_chg": None, "close": None},
+                "today": {"pct_chg": pct_chg, "close": close},
                 "trigger_check": {
                     "stop_loss_triggered": False,
-                    "stop_loss_price": sniper.get("stop_loss"),
+                    "stop_loss_price": stop,
                     "distance_to_stop_pct": None,
                 },
                 "strategy": {
-                    "scenario_a": {"condition": "N/A", "action": sniper.get("ideal_buy", "N/A")},
-                    "scenario_b": {"condition": "N/A", "action": "持有"},
-                    "scenario_c": {"condition": "N/A", "action": sniper.get("stop_loss", "N/A")},
-                    "hard_stop": sniper.get("stop_loss"),
+                    "scenario_a": {"condition": f"突破压力位 {res}", "action": f"加仓, 入场参考: {ideal}"},
+                    "scenario_b": {"condition": f"在 {supp} ~ {res} 区间", "action": "持有不动"},
+                    "scenario_c": {"condition": f"跌破支撑 {supp}", "action": f"减仓, 止损: {stop}"},
+                    "hard_stop": stop,
                 },
             })
         return {
-            "market_summary": {"one_liner": "AI 分析不可用，以下为数据摘录", "key_observations": []},
+            "market_summary": {"one_liner": "AI 分析暂时不可用，以下为基于今天分析数据的关键价位摘录", "key_observations": []},
             "positions": positions,
             "risk_summary": {"stop_warnings": [], "concentration_alert": None, "overall_risk": "无法评估"},
             "_degraded": True,
