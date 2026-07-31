@@ -942,8 +942,9 @@ def run_full_analysis(
     # 大盘缓存: 检查是否已有有效数据，避免重复拉取
     from src.core.trading_calendar import infer_market_phase
     from src.services.market_cache import MarketCacheService
+    from src.storage import DatabaseManager
     _market_phase = infer_market_phase("cn")
-    _market_cache = MarketCacheService(db_manager)
+    _market_cache = MarketCacheService(DatabaseManager())
     _skip_market_fetch = _market_cache.is_fresh(_market_phase)
     if _skip_market_fetch:
         logger.info("大盘缓存有效 (phase=%s)，跳过网络拉取", _market_phase)

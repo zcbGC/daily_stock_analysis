@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional
 
@@ -151,12 +152,12 @@ class EODService:
             if avg_cost and close and quantity:
                 pnl = round((float(close) - float(avg_cost)) / float(avg_cost) * 100, 1)
             holding = {"quantity": quantity, "avg_cost": avg_cost, "pnl_pct": pnl}
-        # 止损距
+        # 止损距（止损价可能是混合字符串，如"1.495元（跌破MA20约0.5%）"，提取首个数值）
         stop = self._clean(sniper.get("stop_loss"))
+        stop_price = self._extract_price(stop)
         sl_pct = None
-        if stop and close:
-            try: sl_pct = round(abs(float(close) - float(stop)) / float(close) * 100, 1)
-            except: pass
+        if stop_price is not None and close:
+            sl_pct = round(abs(float(close) - stop_price) / float(close) * 100, 1)
         return {
             "code": code, "name": name,
             "score": getattr(r, "sentiment_score", 0),
@@ -176,7 +177,7 @@ class EODService:
             "summary": (getattr(r, "analysis_summary", "") or "")[:200],
             "holding": holding,
             "strategy": {
-                "scenario_a": {"condition": f"突破压力位 {pp.get('resistance_level') or '?'}", "action": f"入场参考: {self._clean(sniper.get('ideal_buy')) or '等待回踩'}"},
+                "scenario_a": {"condition": f"放量突破并站稳压力位 {pp.get('resistance_level') or '?'}", "action": f"突破确认后回踩介入（参考 {self._clean(sniper.get('ideal_buy')) or '突破位附近'}）"},
                 "scenario_b": {"condition": f"在 {pp.get('support_level') or '?'} ~ {pp.get('resistance_level') or '?'} 区间", "action": "持有不动"},
                 "scenario_c": {"condition": f"跌破支撑 {pp.get('support_level') or '?'}", "action": f"止损: {stop or '未设置'}"},
                 "hard_stop": stop or "未设置",
@@ -208,11 +209,23 @@ class EODService:
             if v.startswith(p): return v[len(p):]
         return v
 
+    @staticmethod
+    def _extract_price(value) -> Optional[float]:
+        """从混合字符串中提取首个价格数值。'1.495元（跌破MA20约0.5%）' -> 1.495。"""
+        if value is None:
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        m = re.search(r"[-+]?\d+(?:\.\d+)?", str(value))
+        return float(m.group()) if m else None
+
     def _save(self, report: Dict) -> None:
         from src.storage import EODSummary
+        from src.core.trading_calendar import next_trading_date
         today = datetime.now(_CN_TZ).strftime("%Y-%m-%d")
+        next_day = next_trading_date("cn", from_date=datetime.now(_CN_TZ).date()).isoformat()
         with self._db.session_scope() as session:
-            session.add(EODSummary(date=today, next_trading_day=today, data=report, created_at=datetime.now(timezone.utc)))
+            session.add(EODSummary(date=today, next_trading_day=next_day, data=report, created_at=datetime.now(timezone.utc)))
         logger.info("EOD 综合报告已保存 date=%s", today)
 
     def load_latest(self) -> Optional[Dict]:

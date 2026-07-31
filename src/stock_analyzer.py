@@ -18,7 +18,7 @@
 
 import logging
 from dataclasses import dataclass, field
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from enum import Enum
 
 import pandas as pd
@@ -94,7 +94,7 @@ class TrendAnalysisResult:
     ma5: float = 0.0
     ma10: float = 0.0
     ma20: float = 0.0
-    ma60: float = 0.0
+    ma60: Optional[float] = None
     current_price: float = 0.0
     
     # 乖离率（与 MA5 的偏离度）
@@ -237,7 +237,8 @@ class StockTrendAnalyzer:
         result.ma5 = float(latest['MA5'])
         result.ma10 = float(latest['MA10'])
         result.ma20 = float(latest['MA20'])
-        result.ma60 = float(latest.get('MA60', 0))
+        # MA60 样本不足时为 None，避免用 MA20 冒充误导下游/AI
+        result.ma60 = float(latest['MA60']) if pd.notna(latest['MA60']) else None
 
         # 1. 趋势判断
         self._analyze_trend(df, result)
@@ -271,7 +272,8 @@ class StockTrendAnalyzer:
         if len(df) >= 60:
             df['MA60'] = df['close'].rolling(window=60).mean()
         else:
-            df['MA60'] = df['MA20']  # 数据不足时使用 MA20 替代
+            # 数据不足时不提供 MA60（置 NaN），避免用 MA20 冒充导致误导
+            df['MA60'] = np.nan
         return df
 
     def _calculate_macd(self, df: pd.DataFrame) -> pd.DataFrame:

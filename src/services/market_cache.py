@@ -41,11 +41,14 @@ class MarketCacheService:
         row = self._load_latest_row(region)
         if row is None:
             return False
-        archived, created_at, _ = row
-        if archived:
-            return True
+        archived, created_at, row_date, _ = row
+        # 非交易日: 最近交易日的归档快照即为可用（本日无新数据可拉）。
         if phase == PHASE_NON_TRADING:
             return archived
+        # 归档快照只有在“属于今天”时才被视为永远新鲜，避免昨日/历史
+        # 归档行阻塞新交易日的大盘数据拉取。
+        if archived and row_date == self._today_str():
+            return True
         if phase == PHASE_LUNCH_BREAK:
             ttl = self.CACHE_TTL_LUNCH
         else:
@@ -67,11 +70,11 @@ class MarketCacheService:
 
     def load_latest(self, region: str = "cn") -> Optional[dict]:
         row = self._load_latest_row(region)
-        return row[2] if row else None  # (archived, created_at, data)
+        return row[3] if row else None  # (archived, created_at, date, data)
 
     def load_by_date(self, date: str, region: str = "cn") -> Optional[dict]:
         row = self._load_row_by_date(date, region)
-        return row[2] if row else None
+        return row[3] if row else None
 
     def archive_today(self, region: str = "cn") -> None:
         today = self._today_str()
@@ -96,7 +99,7 @@ class MarketCacheService:
         M = _model()
         with self._db.session_scope() as session:
             row = (
-                session.query(M.archived, M.created_at, M.data)
+                session.query(M.archived, M.created_at, M.date, M.data)
                 .filter(M.region == region)
                 .order_by(desc(M.archived), desc(M.created_at))
                 .first()
@@ -107,7 +110,7 @@ class MarketCacheService:
         M = _model()
         with self._db.session_scope() as session:
             row = (
-                session.query(M.archived, M.created_at, M.data)
+                session.query(M.archived, M.created_at, M.date, M.data)
                 .filter(M.date == date, M.region == region)
                 .order_by(M.created_at.desc())
                 .first()

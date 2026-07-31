@@ -1946,9 +1946,6 @@ class GeminiAnalyzer:
             },
             "capital_flow": {
                 "main_net_inflow": "主力净流入(万元)或方向描述",
-                "north_bound": "北向资金动向",
-                "margin_trading": "融资融券余额变化",
-                "block_trades": "大宗交易（如有）",
                 "capital_verdict": "资金面综合判断：偏多/中性/偏空"
             }
         },
@@ -2078,7 +2075,7 @@ class GeminiAnalyzer:
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
-以下文字字段输出时请为关键结论标注数据来源。格式：`[依据: ①xx + ②xx]`，矛盾时 `[依据: ①xx vs ④xx]`，纯推理 `[依据: 推断]`。编号：①技术面(K线/均线/形态) ②指标(RSI/MACD/KDJ/BOLL) ③量价(量比/换手率) ④资金面(主力净流入/北向/融资融券/大宗交易) ⑤消息面(新闻/公告/政策) ⑥基本面(PE/PB/ROE/财报) ⑦筹码(获利比例/均成本/集中度) ⑧大盘(板块轮动/涨跌分布)。"""
+以下文字字段输出时请为关键结论标注数据来源。格式：`[依据: ①xx + ②xx]`，矛盾时 `[依据: ①xx vs ④xx]`，纯推理 `[依据: 推断]`。编号：①技术面(K线/均线/形态) ②指标(RSI/MACD) ③量价(量比/换手率) ④资金面(主力净流入) ⑤消息面(新闻/公告/政策) ⑥基本面(PE/PB/ROE/财报) ⑦筹码(获利比例/均成本/集中度) ⑧大盘(板块轮动/涨跌分布)。注意：北向资金、融资融券、大宗交易、KDJ、BOLL 数据源当前不可用，禁止编造或讨论这些维度。"""
 
     SYSTEM_PROMPT = """你是一位{market_placeholder}投资分析师，负责生成专业的【决策仪表盘】分析报告。
 
@@ -2145,9 +2142,6 @@ class GeminiAnalyzer:
             },
             "capital_flow": {
                 "main_net_inflow": "主力净流入(万元)或方向描述",
-                "north_bound": "北向资金动向",
-                "margin_trading": "融资融券余额变化",
-                "block_trades": "大宗交易（如有）",
                 "capital_verdict": "资金面综合判断：偏多/中性/偏空"
             }
         },
@@ -2275,7 +2269,7 @@ class GeminiAnalyzer:
 - 建议输出可选展示字段 `dashboard.signal_attribution` 六字段；解释推荐理由的构成，包括技术指标、新闻舆情、基本面、市场环境的贡献度，以及最强看多/看空信号。
 - 盘前、非交易日或未知阶段不得伪造今日盘中走势；quote/daily_bars/technical 存在 stale、fallback、missing、fetch_failed、partial 或 estimated 时，`confidence_level` 不得为高。
 
-以下文字字段输出时请为关键结论标注数据来源。格式：`[依据: ①xx + ②xx]`，矛盾时 `[依据: ①xx vs ④xx]`，纯推理 `[依据: 推断]`。编号：①技术面(K线/均线/形态) ②指标(RSI/MACD/KDJ/BOLL) ③量价(量比/换手率) ④资金面(主力净流入/北向/融资融券/大宗交易) ⑤消息面(新闻/公告/政策) ⑥基本面(PE/PB/ROE/财报) ⑦筹码(获利比例/均成本/集中度) ⑧大盘(板块轮动/涨跌分布)。"""
+以下文字字段输出时请为关键结论标注数据来源。格式：`[依据: ①xx + ②xx]`，矛盾时 `[依据: ①xx vs ④xx]`，纯推理 `[依据: 推断]`。编号：①技术面(K线/均线/形态) ②指标(RSI/MACD) ③量价(量比/换手率) ④资金面(主力净流入) ⑤消息面(新闻/公告/政策) ⑥基本面(PE/PB/ROE/财报) ⑦筹码(获利比例/均成本/集中度) ⑧大盘(板块轮动/涨跌分布)。注意：北向资金、融资融券、大宗交易、KDJ、BOLL 数据源当前不可用，禁止编造或讨论这些维度。"""
 
     TEXT_SYSTEM_PROMPT = """你是一位专业的股票分析助手。
 

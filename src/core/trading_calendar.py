@@ -248,6 +248,45 @@ def get_effective_trading_date(
         return fallback_date
 
 
+def next_trading_date(
+    market: Optional[str], from_date: Optional[date] = None
+) -> date:
+    """
+    Resolve the next upcoming trading session strictly after ``from_date``.
+
+    Semantics differ from :func:`get_effective_trading_date` (which returns the
+    latest *completed* session): this returns the next *upcoming* session, used
+    e.g. for EOD ``next_trading_day``.
+
+    Rules:
+    - Skips weekends/holidays via the exchange calendar when available
+    - Calendar lookup failure / missing exchange: fail-open to skipping weekends
+    - Hard ceiling of 30 calendar days to avoid unbounded loops
+    """
+    if from_date is None:
+        from_date = date.today()
+    start = from_date + timedelta(days=1)
+
+    if _XCALS_AVAILABLE:
+        ex = MARKET_EXCHANGE.get(market or "")
+        if ex:
+            try:
+                cal = xcals.get_calendar(ex)
+                probe = start
+                for _ in range(30):
+                    if cal.is_session(probe):
+                        return probe
+                    probe += timedelta(days=1)
+            except Exception as e:
+                logger.warning("trading_calendar.next_trading_date fail-open: %s", e)
+
+    # Fail-open: skip weekends only.
+    probe = start
+    while probe.weekday() >= 5:
+        probe += timedelta(days=1)
+    return probe
+
+
 def _as_market_datetime(value: Any, tz_name: str) -> Optional[datetime]:
     """
     Convert exchange-calendar timestamps into market-local datetimes.
