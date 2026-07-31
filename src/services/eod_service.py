@@ -133,16 +133,16 @@ class EODService:
         return json.dumps(items, ensure_ascii=False, indent=2)
 
     def _call_llm(self, prompt: str, config: Any = None) -> str:
-        """调用 LLM。复用 LiteLLM 通道。"""
+        """调用 LLM。复用 LiteLLM 通道（LLMToolAdapter.call_text）。"""
         try:
-            from src.agent.llm_adapter import LLMAdapter
-            adapter = LLMAdapter(config) if config else LLMAdapter()
-            result = adapter.complete(
+            from src.agent.llm_adapter import LLMToolAdapter
+            adapter = LLMToolAdapter(config)
+            response = adapter.call_text(
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.3,
                 max_tokens=3000,
             )
-            return result.content or ""
+            return response.content or ""
         except Exception as e:
             logger.warning("EOD LLM 调用失败: %s", e)
             return "{}"
