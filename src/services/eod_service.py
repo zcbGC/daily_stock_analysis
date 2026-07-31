@@ -21,13 +21,20 @@ class EODService:
         self, stock_results, market_review: str,
         portfolio: Optional[Dict] = None, config: Any = None,
     ) -> Dict[str, Any]:
-        # 先试 LLM
-        report = self._try_llm(stock_results, market_review, portfolio, config)
-        if report:
-            self._save(report)
-            return report
-        # LLM 失败 → 用结构化数据格式化
+        # 始终以结构化数据为基础（分数/价格/均线等事实数据）
         report = self._build_structured_report(stock_results, market_review, portfolio)
+        # LLM 增强策略和市场总结（可选，失败不影响基础数据）
+        llm = self._try_llm(stock_results, market_review, portfolio, config)
+        if llm:
+            report["market_summary"] = llm.get("market_summary", report["market_summary"])
+            report["risk_summary"] = llm.get("risk_summary", report["risk_summary"])
+            # 用 LLM 的 strategy 覆盖结构化版本
+            llm_positions = {p["code"]: p for p in llm.get("positions", []) or []}
+            for p in report["positions"]:
+                lp = llm_positions.get(p["code"])
+                if lp and lp.get("strategy"):
+                    p["strategy"] = lp["strategy"]
+            report["_llm_enhanced"] = True
         self._save(report)
         return report
 
